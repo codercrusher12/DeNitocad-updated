@@ -1,0 +1,16 @@
+{
+  "name": "nl-to-cad-mcp-gateway",
+  "version": "1.0.0",
+  "description": "x402-gated MCP gateway that fronts the nl-to-cad FastAPI backend for the OKX AI Marketplace (A2MCP pay-per-call listing).",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@x402/core": "^2.3.0",
+    "@x402/evm": "^2.9.0",
+    "@x402/express": "^2.3.0",
+    "express": "^4.19.2"
+  }
+}

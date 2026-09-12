@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+*.db
+output/
+node_modules/
+mcp-gateway/
+.git/

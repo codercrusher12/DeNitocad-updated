@@ -1,0 +1,5 @@
+# Only needed to run scripts/deploy_design_registry.py once. NOT added
+# to the main requirements.txt on purpose - the running API service
+# never needs a Solidity compiler, only this one-off deploy step does.
+# Install with: pip install -r scripts/requirements-deploy.txt --break-system-packages
+py-solc-x>=2.0.2

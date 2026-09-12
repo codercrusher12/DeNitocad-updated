@@ -1,0 +1,62 @@
+# Production stack for a self-managed VPS.
+#
+# Two services:
+#   - app:   the FastAPI/CadQuery backend (built from the repo's Dockerfile)
+#   - caddy: reverse proxy that terminates TLS and gets you a real
+#            certificate automatically (Let's Encrypt) just from a domain
+#            name in the Caddyfile - no certbot, no manual renewal cron.
+#
+# Why volumes matter here: the Dockerfile's own comments note Railway's
+# filesystem is ephemeral - on a VPS you own the disk, but the *container*
+# filesystem is still wiped on `docker compose up --build` / recreate
+# unless you mount volumes. `nitocad-data` and `nitocad-output` below are
+# what make job history (sqlite) and generated STEP/STL files survive a
+# redeploy. If you've configured R2 (see .env), `nitocad-output` becomes
+# less critical (files live in R2 instead) but the sqlite volume still
+# matters - that's your job/API-key history.
+services:
+  app:
+    build: .
+    container_name: nitocad-app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Overrides whatever DB_PATH/OUTPUT_DIR are in .env - keeps the
+      # container's paths aligned with the volumes mounted below
+      # regardless of what a local-dev .env happens to say.
+      DB_PATH: /data/nl_to_cad.db
+      OUTPUT_DIR: /data/output
+      ENVIRONMENT: production
+      LOG_FORMAT: json
+    volumes:
+      - nitocad-data:/data
+    # Not published to the host directly - only Caddy talks to it, over
+    # the internal compose network. Nothing but 80/443 is exposed
+    # externally; see the setup guide's firewall step.
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: nitocad-caddy
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  nitocad-data:
+  caddy-data:
+  caddy-config:

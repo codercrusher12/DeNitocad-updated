@@ -1,0 +1,33 @@
+# Replace with your actual domain (must already point an A/AAAA record at
+# this VPS's IP - Caddy uses it both for routing and for requesting the
+# TLS cert). Caddy handles the entire ACME/Let's Encrypt flow itself:
+# no certbot, no renewal cron, no manual cert paths.
+your-domain.com {
+	reverse_proxy app:8000
+
+	# Sets X-Forwarded-Proto/Host/For, which is what uvicorn's
+	# --proxy-headers flag (already set in the Dockerfile's CMD) reads to
+	# build correct https:// URLs and log the real client IP instead of
+	# Caddy's own container IP - matters for slowapi's per-IP rate
+	# limiting too, or every request would appear to come from the same
+	# internal address and share one rate-limit bucket.
+	header_up X-Forwarded-Proto {scheme}
+
+	encode gzip
+
+	log {
+		output stdout
+		format json
+	}
+}
+
+# --- Local testing without a domain / DNS -------------------------------
+# Comment out the block above and uncomment this one to serve plain HTTP
+# on the VPS's bare IP while you're still setting things up. Switch back
+# to the domain block before exposing this to real traffic - unencrypted
+# API keys and DeepSeek keys in transit otherwise.
+#
+# :80 {
+# 	reverse_proxy app:8000
+# 	header_up X-Forwarded-Proto {scheme}
+# }

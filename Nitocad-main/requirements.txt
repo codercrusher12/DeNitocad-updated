@@ -1,0 +1,43 @@
+cadquery==2.3.1
+ezdxf==1.3.5      # exporters.py - multi-view orthographic DXF export (VISIBLE/HIDDEN/LABELS/BORDER)
+reportlab==4.2.5  # exporters.py - 1:1 scale vector PDF technical drawings with title block
+fastapi==0.115.12
+uvicorn==0.35.0
+pydantic==2.11.7
+pydantic-settings==2.6.1   # config.py - typed env var loading, replaces scattered os.getenv
+python-multipart==0.0.9
+jinja2==3.1.2
+numpy>=1.26.4,<2.0
+openai>=1.55.3   # DeepSeek client (deepseek_parser.py) - OpenAI-compatible API via base_url override. Was pinned to 1.35.13, which hardcodes a `proxies=` kwarg incompatible with httpx>=0.28 (pinned below) - fixed upstream in 1.55.3, see https://github.com/openai/openai-python/issues/1902
+boto3>=1.34.0   # R2 (S3-compatible) storage - see storage.py, optional at runtime
+slowapi==0.1.9   # per-IP rate limiting on /generate and /api/keys/generate - see web_app.py
+
+# --- dev / test / lint (not needed at runtime, but pinned here so a
+# single `pip install -r requirements.txt` gets a fully working dev
+# environment - see also pyproject.toml's [project.optional-dependencies]
+# for the `pip install -e ".[dev]"` alternative) ---
+pytest==8.3.4
+pytest-cov==6.0.0
+httpx==0.28.1        # required by fastapi.testclient.TestClient
+ruff==0.8.4
+mypy==1.13.0
+
+# MCP / A2MCP (a2mcp/) - real OKX Payment SDK integration, ported from
+# Stitchfren's backend/cutline/requirements.txt. okxweb3-app-x402 provides
+# the x402.http.* imports a2mcp/x402.py uses; fastmcp provides the MCP
+# protocol server a2mcp/server.py mounts at /mcp. Neither version was
+# independently confirmed against PyPI at time of writing (no network
+# access in this environment) - check before relying on them, same caveat
+# mcp-gateway's @x402/* pins had.
+okxweb3-app-x402
+eth-abi
+eth-account
+web3
+fastmcp==2.14.7
+
+# anthropic SDK removed: it was only used by llm_parser.py, which is
+# unused now that cad_generator.py calls DeepSeek's parser
+# (deepseek_parser.py) or the regex fallback (smart_parser.py). If
+# llm_parser.py gets wired back in later, re-add a current `anthropic`
+# version (not the old 0.7.5 pin - that's what was fighting `openai`
+# over httpx range and causing the pip backtracking).

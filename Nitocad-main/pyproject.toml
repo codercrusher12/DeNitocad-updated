@@ -1,0 +1,117 @@
+[project]
+name = "nitocad"
+version = "2.2.1"
+description = "Natural language to parametric CAD (.STEP/.STL) generation service"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "MIT" }
+
+dependencies = [
+    "cadquery==2.3.1",
+    "ezdxf==1.3.5",
+    "reportlab==4.2.5",
+    "fastapi==0.115.12",
+    "uvicorn==0.35.0",
+    "pydantic==2.11.7",
+    "pydantic-settings==2.6.1",
+    "python-multipart==0.0.9",
+    "jinja2==3.1.2",
+    "numpy>=1.26.4,<2.0",
+    "openai==1.35.13",
+    "boto3>=1.34.0",
+    "slowapi==0.1.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-cov==6.0.0",
+    "httpx==0.28.1",
+    "ruff==0.8.4",
+    "mypy==1.13.0",
+    "pre-commit==4.0.1",
+]
+mcp = [
+    "fastmcp==2.14.7",
+    "okxweb3-app-x402",
+    "eth-abi",
+    "eth-account",
+    "web3",
+]
+
+[project.scripts]
+nitocad = "cli:main"
+
+# --------------------------------------------------------------- ruff ----
+# Replaces the informal "keep it clean" standard the codebase's own
+# comments imply (e.g. verifying against library source before use) with
+# something actually enforced in CI. line-length 100 rather than the
+# default 88 because several existing docstrings/comments in this
+# codebase run long and are more valuable un-truncated than aggressively
+# wrapped.
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["frontend", "mcp-gateway", "cad_templates/__init__.py"]
+extend-exclude = [".venv", "venv", ".git", "__pycache__"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes (unused imports/vars, undefined names)
+    "I",   # isort (import ordering)
+    "B",   # flake8-bugbear (common bug patterns)
+    "UP",  # pyupgrade (modern syntax)
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line length handled by the formatter, not worth failing CI over in docstrings
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "E402"]  # assert is expected in tests; pytest.importorskip() must run before the module-level imports it's guarding
+
+[tool.ruff.format]
+quote-style = "double"
+
+# --------------------------------------------------------------- mypy ----
+# strict-ish but not `strict = true` outright - this codebase leans on
+# CadQuery's Workplane (which has minimal type stubs) throughout, so a
+# fully strict pass would be mostly `# type: ignore` noise on library
+# boundaries rather than real bugs caught. The settings below still catch
+# the things that matter: unused ignores going stale, missing return
+# types drifting, etc.
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+ignore_missing_imports = true
+exclude = ["^tests/", "^mcp-gateway/", "^frontend/"]
+
+# -------------------------------------------------------------- pytest ---
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "requires_cadquery: test needs a real CadQuery/OCCT install to build actual geometry",
+    "requires_network: test needs outbound network access (DeepSeek, R2, etc)",
+]
+
+[tool.coverage.run]
+source = [
+    "cad_generator", "smart_parser", "validator", "assembly", "db",
+    "storage", "security", "config", "exceptions", "file_safety",
+    "cad_templates",
+]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
