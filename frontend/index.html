@@ -674,6 +674,7 @@
             <button id="demoSubmit" type="button" class="btn btn-primary">Generate + Pay in BOT</button>
             <span id="demoStatus" class="demo-status"></span>
           </div>
+          <p id="demoCostNote" class="demo-dl-meta"></p>
           <p class="demo-dl-meta">Free preview is STL only and not exportable later - it's a separate job. Happy with it? Use "Generate + Pay in BOT" with the same description for an exportable version.</p>
 
           <div id="demoResults" class="demo-results">
@@ -794,6 +795,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
   const warningsEl = document.getElementById('demoWarnings');
   const downloadsEl = document.getElementById('demoDownloads');
   const descriptionEl = document.getElementById('description');
+  const costNoteEl = document.getElementById('demoCostNote');
 
   if (new URLSearchParams(location.search).has('config')) {
     demoCfg.style.display = 'flex';
@@ -804,6 +806,41 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 
   let SERVICE_API_KEY = null;
   let chainConfig = null;
+
+  // Whether THIS browser already holds a cached API key for the current
+  // API base - the only thing that determines whether clicking "Generate
+  // + Pay in BOT" is about to trigger one payment or two. Read fresh
+  // each time rather than trusting the SERVICE_API_KEY variable, since
+  // that's only populated after ensureServiceKey() actually runs once -
+  // this needs to be accurate before that, for the cost note on load.
+  function hasServiceKey(base){
+    return !!localStorage.getItem('nitocad_service_key_' + base);
+  }
+
+  // Keeps the visible price note honest at every point: shown before
+  // any payment (so the wallet prompt is never a surprise), and updated
+  // the instant a key gets issued so the "first generation" framing
+  // doesn't linger after it no longer applies.
+  async function updateCostNote(){
+    const base = getApiBase();
+    if(!base){ costNoteEl.textContent = ''; return; }
+    try{
+      const cfg = await getChainConfig(base);
+      const perCall = cfg.per_call_price_bot;
+      if(hasServiceKey(base)){
+        costNoteEl.textContent = `This generation costs ${perCall} BOT, paid from your wallet when you click Generate.`;
+      } else {
+        const keyPrice = cfg.key_issue_price_bot;
+        const total = (Number(keyPrice) + Number(perCall));
+        costNoteEl.textContent = `First generation on this browser: ${keyPrice} BOT one-time (issues your API key) + ${perCall} BOT for this generation = ${total} BOT total, as two separate wallet approvals. Every generation after that is just ${perCall} BOT.`;
+      }
+    } catch(err){
+      // Chain config not reachable yet (e.g. API still warming up) -
+      // fail quiet here, the button's own error handling covers it.
+      costNoteEl.textContent = '';
+    }
+  }
+  updateCostNote();
 
   async function getChainConfig(base){
     if (chainConfig) return chainConfig;
@@ -860,6 +897,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     const cached = localStorage.getItem('nitocad_service_key_' + base);
     if(cached){ SERVICE_API_KEY = cached; return; }
     const cfg = await getChainConfig(base);
+    statusEl.textContent = `Waiting for payment (1 of 2): ${cfg.key_issue_price_bot} BOT one-time API key…`;
     const txHash = await payBot(base, cfg.key_issue_price_bot);
     const resp = await fetch(base + '/api/keys/generate', {
       method: 'POST',
@@ -870,14 +908,36 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     if (!resp.ok) throw new Error(data.detail || 'Key issuance failed.');
     SERVICE_API_KEY = data.api_key;
     localStorage.setItem('nitocad_service_key_' + base, SERVICE_API_KEY);
+    updateCostNote();
+  }
+
+  // Fires once, right before the FIRST payment of a "Generate + Pay in
+  // BOT" click - the one moment this page is about to ask for a wallet
+  // approval the person may not expect (the one-time key fee, bundled
+  // in with the per-generation fee, as two separate approvals). A
+  // passive price note above the button is easy to miss; a modal the
+  // person has to explicitly accept before their wallet opens is not.
+  // Returning users who already hold a key never see this - there's
+  // nothing surprising left to confirm for them.
+  function confirmFirstChargeIfNeeded(base, cfg){
+    if(hasServiceKey(base)) return true;
+    const total = (Number(cfg.key_issue_price_bot) + Number(cfg.per_call_price_bot));
+    return window.confirm(
+      `This is your first generation on this browser.\n\n` +
+      `You'll be asked to approve two payments from your wallet:\n` +
+      `  1. ${cfg.key_issue_price_bot} BOT - one-time API key (only ever charged once)\n` +
+      `  2. ${cfg.per_call_price_bot} BOT - this generation\n\n` +
+      `Total: ${total} BOT. Every generation after this one is just ${cfg.per_call_price_bot} BOT.\n\n` +
+      `Continue?`
+    );
   }
 
   async function downloadFormat(base, fmt, jobId, btn){
     const originalText = btn.textContent;
     btn.disabled = true;
-    btn.textContent = 'Paying...';
     try {
       const cfg = await getChainConfig(base);
+      btn.textContent = `Paying ${cfg.per_call_price_bot} BOT...`;
       const txHash = await payBot(base, cfg.per_call_price_bot);
       btn.textContent = 'Building...';
       const resp = await fetch(`${base}/export/${fmt}/${jobId}?tx_hash=${txHash}`, {
@@ -918,7 +978,9 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     if(!v) return;
     setApiBase(v);
     SERVICE_API_KEY = null;
+    chainConfig = null;
     refreshStatus();
+    updateCostNote();
   });
 
   document.querySelectorAll('.demo-examples button').forEach(btn => {
@@ -1045,10 +1107,14 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
       dxf: 'DXF (2D cut layers)',
       pdf: 'PDF (1:1 drawing)',
     };
+    // chainConfig is already populated by this point on the non-preview
+    // path (submitBtn awaits getChainConfig before ever reaching here),
+    // so this is safe to read synchronously rather than re-fetching.
+    const exportPrice = (chainConfig && chainConfig.per_call_price_bot) ?? '0.2';
     let links = downloadStlUrl ? `<a href="${downloadStlUrl}" target="_blank" rel="noopener">↓ STL (mesh)</a>` : '';
     if (data.job_id && !isPreview) {
       for (const [fmt, label] of Object.entries(formatLabels)) {
-        links += `<button class="btn btn-ghost" onclick="downloadFormat('${base}','${fmt}','${data.job_id}',event)">↓ ${label}</button>`;
+        links += `<button class="btn btn-ghost" onclick="downloadFormat('${base}','${fmt}','${data.job_id}',event)">↓ ${label} — ${exportPrice} BOT</button>`;
       }
     }
     let meta = '';
@@ -1104,16 +1170,26 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     const description = descriptionEl.value.trim();
     if(!description){ statusEl.classList.add('err'); statusEl.textContent = 'Enter a description first.'; return; }
 
-    submitBtn.disabled = true;
     statusEl.classList.remove('err');
+
+    let cfg;
+    try{
+      cfg = await getChainConfig(base);
+    } catch(err){
+      statusEl.classList.add('err');
+      statusEl.textContent = 'Could not reach pricing info - check back shortly.';
+      return;
+    }
+    if(!confirmFirstChargeIfNeeded(base, cfg)) return;
+
+    submitBtn.disabled = true;
     resultsEl.classList.remove('active');
     statusEl.textContent = 'Generating…';
 
     try{
       if(!SERVICE_API_KEY) await ensureServiceKey(base);
 
-      statusEl.textContent = 'Waiting for payment…';
-      const cfg = await getChainConfig(base);
+      statusEl.textContent = `Waiting for payment: ${cfg.per_call_price_bot} BOT for this generation…`;
       let txHash = await payBot(base, cfg.per_call_price_bot);
       statusEl.textContent = 'Generating…';
 
@@ -1130,12 +1206,25 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
         // this is the one case where a 401 costs another real payment:
         // a fresh key costs another key-issue payment, and the tx_hash
         // above was tied to the now-invalid key's wallet check, so it
-        // has to be re-paid too, not reused. Rare, but not free -
-        // worth knowing before assuming a 401 is harmless to retry.
+        // has to be re-paid too, not reused. Rare, but not free - and
+        // since this happens mid-flow rather than on a fresh click,
+        // it gets its own explicit confirmation too rather than
+        // silently re-charging the key fee.
+        const reissue = window.confirm(
+          `Your saved API key is no longer valid on this server (it may have been reset).\n\n` +
+          `Getting a new one costs another ${cfg.key_issue_price_bot} BOT one-time fee, ` +
+          `plus the ${cfg.per_call_price_bot} BOT for this generation again.\n\n` +
+          `Continue and pay again?`
+        );
+        if(!reissue){
+          statusEl.textContent = 'Cancelled - no further payment made.';
+          submitBtn.disabled = false;
+          return;
+        }
         localStorage.removeItem('nitocad_service_key_' + base);
         SERVICE_API_KEY = null;
         await ensureServiceKey(base);
-        statusEl.textContent = 'Waiting for payment…';
+        statusEl.textContent = `Waiting for payment: ${cfg.per_call_price_bot} BOT for this generation…`;
         txHash = await payBot(base, cfg.per_call_price_bot);
         statusEl.textContent = 'Generating…';
         res = await fetch(base + '/generate', {
@@ -1158,6 +1247,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
       statusEl.textContent = err.message || 'Something went wrong.';
     } finally {
       submitBtn.disabled = false;
+      updateCostNote();
     }
   });
 })();
