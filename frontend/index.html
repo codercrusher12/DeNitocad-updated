@@ -885,7 +885,15 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
       if(!pathOrUrl) return null;
       return /^https?:\/\//.test(pathOrUrl) ? pathOrUrl : base + pathOrUrl;
     }
-    const stlUrl = resolveUrl(data.stl_url);
+    // stl_url only exists if the R2 upload succeeded. When it didn't
+    // (missing/misconfigured R2, or - given this deploy shares
+    // Stitchfren's bucket - a permissions or path assumption that
+    // doesn't hold here), fall back to the backend's own local file
+    // serving via stl_file, the same fallback the embedded Railway
+    // demo already uses. Without this, an R2 failure means the 3D
+    // viewer silently gets told to load nothing.
+    const stlUrl = resolveUrl(data.stl_url) ||
+      (data.stl_file ? `${base}/download/stl/${data.stl_file.split('/').pop()}` : null);
 
     // STL already exists (it built the preview) and is served
     // unauthenticated, so it's a direct link. Every other format is
