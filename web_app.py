@@ -482,6 +482,7 @@ async def root():
                 <br>
                 <button onclick="previewFree()" id="previewBtn" style="background:#6c757d;">Preview (Free, STL only)</button>
                 <button onclick="generate()" id="generateBtn">Generate + Pay in BOT</button>
+                <p id="costNote" style="font-size:0.85rem;color:#6c757d;margin-top:6px;"></p>
                 <p style="font-size:0.85rem;color:#6c757d;margin-top:6px;">Preview is free and unlimited detail-wise, but STL only and not exportable later - it's a fresh, separate job. Once you're happy with the description, use "Generate + Pay in BOT" for a version you can export to STEP/IGES/DXF/PDF.</p>
             </div>
             
@@ -576,6 +577,8 @@ async def root():
                     return;
                 }
                 const cfg = await getChainConfig();
+                const resultDiv = document.getElementById('result');
+                resultDiv.innerHTML = `<div class="loading"><div class="spinner"></div><p>Waiting for payment (1 of 2): ${cfg.key_issue_price_bot} BOT one-time API key...</p></div>`;
                 const txHash = await payBot(cfg.key_issue_price_bot);
                 const resp = await fetch('/api/keys/generate', {
                     method: 'POST',
@@ -588,6 +591,52 @@ async def root():
                 }
                 SERVICE_API_KEY = data.api_key;
                 localStorage.setItem('nl_to_cad_service_key', SERVICE_API_KEY);
+                updateCostNote();
+            }
+
+            // Whether THIS browser already holds a cached key - the only
+            // thing that determines whether clicking "Generate + Pay in
+            // BOT" is about to trigger one payment or two.
+            function hasServiceKey() {
+                return !!localStorage.getItem('nl_to_cad_service_key');
+            }
+
+            // Keeps the visible price note under the buttons honest at
+            // every point, so a wallet prompt is never the first time
+            // the one-time key fee gets mentioned. Called on load, after
+            // key issuance, and after every generate attempt.
+            async function updateCostNote() {
+                const el = document.getElementById('costNote');
+                if (!el) return;
+                try {
+                    const cfg = await getChainConfig();
+                    if (hasServiceKey()) {
+                        el.textContent = `Generating costs ${cfg.per_call_price_bot} BOT, paid from your wallet when you click Generate.`;
+                    } else {
+                        const total = Number(cfg.key_issue_price_bot) + Number(cfg.per_call_price_bot);
+                        el.textContent = `First generation on this browser: ${cfg.key_issue_price_bot} BOT one-time (issues your API key) + ${cfg.per_call_price_bot} BOT for this generation = ${total} BOT total, as two separate wallet approvals. Every generation after that is just ${cfg.per_call_price_bot} BOT.`;
+                    }
+                } catch (err) {
+                    el.textContent = '';
+                }
+            }
+
+            // The one moment this page is about to ask for a wallet
+            // approval the person may not expect: the one-time key fee,
+            // bundled into a "Generate" click as a second silent charge.
+            // Returning users who already hold a key never see this -
+            // nothing surprising left to confirm for them.
+            function confirmFirstChargeIfNeeded(cfg) {
+                if (hasServiceKey()) return true;
+                const total = Number(cfg.key_issue_price_bot) + Number(cfg.per_call_price_bot);
+                return window.confirm(
+                    `This is your first generation on this browser.\n\n` +
+                    `You'll be asked to approve two payments from your wallet:\n` +
+                    `  1. ${cfg.key_issue_price_bot} BOT - one-time API key (only ever charged once)\n` +
+                    `  2. ${cfg.per_call_price_bot} BOT - this generation\n\n` +
+                    `Total: ${total} BOT. Every generation after this one is just ${cfg.per_call_price_bot} BOT.\n\n` +
+                    `Continue?`
+                );
             }
 
             async function downloadFormat(fmt, jobId) {
@@ -599,9 +648,9 @@ async def root():
                 const btn = event.target;
                 const originalText = btn.textContent;
                 btn.disabled = true;
-                btn.textContent = 'Paying...';
                 try {
                     const cfg = await getChainConfig();
+                    btn.textContent = `Paying ${cfg.per_call_price_bot} BOT...`;
                     const txHash = await payBot(cfg.per_call_price_bot);
                     btn.textContent = 'Building...';
                     const resp = await fetch(`/export/${fmt}/${jobId}?tx_hash=${txHash}`, {
@@ -800,11 +849,20 @@ async def root():
                     alert('Please enter a description');
                     return;
                 }
-                
+
                 const resultDiv = document.getElementById('result');
                 const generateBtn = document.getElementById('generateBtn');
                 const previewBtn = document.getElementById('previewBtn');
-                
+
+                let cfg;
+                try {
+                    cfg = await getChainConfig();
+                } catch (err) {
+                    resultDiv.innerHTML = `<div class="error"><strong>✗ Could not reach pricing info:</strong> ${err.message}</div>`;
+                    return;
+                }
+                if (!confirmFirstChargeIfNeeded(cfg)) return;
+
                 resultDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Generating CAD...</p></div>';
                 generateBtn.disabled = true;
                 previewBtn.disabled = true;
@@ -813,8 +871,7 @@ async def root():
                     if (!SERVICE_API_KEY) {
                         await ensureServiceKey();
                     }
-                    const cfg = await getChainConfig();
-                    resultDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Waiting for payment...</p></div>';
+                    resultDiv.innerHTML = `<div class="loading"><div class="spinner"></div><p>Waiting for payment: ${cfg.per_call_price_bot} BOT for this generation...</p></div>`;
                     const txHash = await payBot(cfg.per_call_price_bot);
                     resultDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Generating CAD...</p></div>';
                     const response = await fetch('/generate', {
@@ -872,6 +929,7 @@ async def root():
                 } finally {
                     generateBtn.disabled = false;
                     previewBtn.disabled = false;
+                    updateCostNote();
                 }
             }
             
@@ -885,7 +943,20 @@ async def root():
             // Initialize viewer on load
             window.addEventListener('load', () => {
                 initViewer();
-                ensureServiceKey();
+                // NOTE: this used to call ensureServiceKey() here too,
+                // which meant simply loading this page - no click, no
+                // typed description - would try to auto-connect a
+                // wallet and immediately request a real 5 BOT payment
+                // if the visitor had no cached key yet. Wallet-connect-
+                // then-charge on page load with zero user action is
+                // also the exact behavioral signature wallet security
+                // tools (e.g. MetaMask's Blockaid integration) look for
+                // to flag drainer/scam sites - not a risk worth taking
+                // on a legitimate page just to warm the cache a few
+                // seconds early. Key issuance now only ever happens
+                // from an explicit Generate click, same as the price
+                // itself only ever being disclosed at that point.
+                updateCostNote();
 
                 // Handle window resize
                 window.addEventListener('resize', () => {
