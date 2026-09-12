@@ -346,6 +346,120 @@ against PyPI at time of writing — check before relying on them.
 marketplace at `/mcp` happens through OKX's own signup flow — not
 something this repo can do for you.
 
+**Without OKX credentials configured**: `/mcp` returns a `503` with a
+clear `okx_mcp_not_configured` error instead of crashing the whole
+backend at startup. This was a real production incident, not a
+hypothetical — `a2mcp/server.py` used to call `build_paid_app()`
+unconditionally at module import time, and `web_app.py` imports that
+module unconditionally too, so an unconfigured OKX listing took down
+every route on the backend, including the unrelated BOT Chain ones,
+the moment `OKX_API_KEY`/`OKX_SECRET_KEY`/`OKX_PASSPHRASE`/
+`PAY_TO_ADDRESS` were all unset. Fixed by catching `PaymentConfigError`
+at that call site and falling back to a tiny always-503 Starlette app
+for `mcp_app_gated` — deliberately *not* falling back to the free/
+unpaid path, since that would silently serve OKX's paid listing for
+free, exactly what the original check exists to prevent.
+
+## `botchain_pay.py` / `a2mcp_botchain/` / `design_registry.py` — BOT Chain
+
+A second, separate payment rail from the OKX listing above. BOT Chain has
+no live native payment protocol yet (AgentPay is still roadmap per BOT
+Chain's own materials), so this is a manual pay-to-treasury,
+prove-it-with-a-tx-hash flow, not an SDK integration like OKX's.
+
+**Two payment points**: a one-time `BOTCHAIN_KEY_ISSUE_PRICE_BOT` (5 BOT
+default) to mint an API key via `POST /api/keys/generate`, then
+`BOTCHAIN_PER_CALL_PRICE_BOT` (0.2 BOT default) on every `/generate`,
+`/export/{fmt}/{job_id}`, or `a2mcp_botchain` tool call.
+`botchain_pay.verify_and_record_payment` checks the tx is mined, sent to
+`TREASURY_ADDRESS`, for at least the required amount — and, wherever an
+existing identity should own the payment (an API key's wallet, a job's
+wallet), that the tx's *sender* matches too (`expected_sender`). That
+last check exists because of a specific finding from auditing
+ShieldGuard's own `connections.js`/`webhook.js`: without it, anyone
+watching the chain for a qualifying payment to the treasury could spend
+someone else's tx hash against their own call first. Double-spend/replay
+protection is `db.py`'s `payments` table, `tx_hash` as `PRIMARY KEY` —
+`reserve_payment()` runs before any RPC work, so sqlite's own uniqueness
+constraint is the serialization guarantee, not an application lock.
+
+**Free tier**: `POST /preview` — no wallet, no API key, STL only, hard
+per-IP rate limit (`RATE_LIMIT_PREVIEW`), and deliberately forces the
+fallback parser instead of DeepSeek (a free, unauthenticated route
+calling a paid external LLM API on every request would be a real cost-
+abuse vector). A preview job's `user_id` is `"anonymous"` and can never
+be claimed/upgraded to a paid export later — re-submit the same
+description through the paid flow instead. This avoids the security
+question an upgradeable anonymous job would raise (anyone could try to
+claim any anonymous `job_id`).
+
+**On-demand export split**: `/generate` only builds and returns STL —
+STEP/IGES/DXF/PDF are deferred to `GET /export/{fmt}/{job_id}`
+(`cad_generator.export_format_for_job`), rebuilt from the job's stored
+`part_type`/`parameters` (same template + same params ⇒ same geometry),
+built and paid for individually. This is what makes the free preview
+tier affordable at all — the expensive multi-format export work only
+happens when a format is actually wanted.
+
+**`a2mcp_botchain/server.py`**: a second real MCP server, mounted at
+`/mcp-bot` (not `/mcp` — different payment rail, deliberately not
+shared). Two tools: `generate_cad_part` (same pattern as key issuance —
+the paying wallet becomes the job's identity, no prior identity to check
+against) and `export_format` (looks up the job's owner *before*
+verifying payment, so `expected_sender` can be enforced — see the audit
+finding above).
+
+**`contracts/DesignRegistry.sol`**: on-chain design provenance, fires
+once per job on STEP export only (not every format — `anchorDesign`
+reverts on a duplicate `jobId` anyway). Anchors a parameters hash +
+output hash + required template version in contract storage for O(1)
+lookups, but emits the **full parameters JSON only in the event log**,
+not contract storage — deliberate, not a gas-saving shortcut: this
+backend's own filesystem is ephemeral across Railway redeploys (see
+`storage.py`), so if the raw parameters only lived in this repo's sqlite
+db, "reproducibility" would quietly depend on this server staying up
+forever. Event data is cheap and permanently readable from chain
+history, independent of this backend's uptime. `templateVersion` is
+required, not optional — without it, a later template bugfix silently
+breaks reproducibility for every design anchored before the fix.
+Anchoring is fire-and-forget and best-effort: it can never fail or
+block a paid export, since the user already paid for the file
+regardless of whether the chain call succeeds.
+
+**Deploying the registry** (`scripts/deploy_design_registry.py`, run
+once, manually, per chain): compiles the contract with `py-solc-x`
+(`scripts/requirements-deploy.txt` — deliberately *not* in the main
+`requirements.txt`, the running API never needs a Solidity compiler),
+deploys from `DEPLOYER_PRIVATE_KEY`, writes the ABI to
+`contracts/DesignRegistry.abi.json` to commit. The printed address then
+has to be set manually as `DESIGN_REGISTRY_ADDRESS` in Railway's env
+vars — the script has no Railway API access and shouldn't. Ongoing
+anchor calls sign with a *different* env var,
+`ANCHOR_WALLET_PRIVATE_KEY` — a wallet this server itself controls and
+pays gas from, separate from `TREASURY_ADDRESS` (which only ever
+receives, never signs).
+
+**Not yet verified**: none of this has been run against real
+dependencies or a real chain. No network access in the environment this
+was built in to install `web3`/`fastmcp`/`py-solc-x` or reach BOT
+Chain's RPC, so this is syntax-checked and structurally reviewed against
+the real repo files, not executed. `DesignRegistry.sol` has not been run
+through an actual `solc` compile — its patterns are matched line-by-line
+against ShieldGuard's own already-deployed `ReceiptRegistry.sol`,
+which is not the same as compiling it. **Nothing is deployed** — no
+testnet contract, no funded treasury or anchor wallet, no end-to-end
+tested payment. Test all of this on BOT Chain testnet before treating
+any of it as done, and before any marketing copy claims "inscribed
+onchain" as a live feature.
+
+**Known gaps, not fixed**: `frontend/index.html` (the external landing
+page) has its own copy of this same wallet-payment flow, kept manually
+in sync with `web_app.py`'s embedded demo — there is no shared
+JS module between them, so a future change to one needs the same change
+made to the other by hand. A Telegram bot (reusing `botchain_pay`/
+`cad_generator`/`db` directly, manual paste-your-tx-hash flow, no
+WalletConnect) is planned but not built.
+
 ## Deployment topology
 
 Two separate deploys (down from three — `a2mcp/`'s migration into the
@@ -467,13 +581,34 @@ version, not the old pinned one that caused the conflict.
 - **IGES** — exact B-rep, legacy mechanical CAD interchange
 - **DXF** — layer-classified 2D section (outline / holes / centerlines) for laser/plasma/waterjet cutting
 - **PDF** — 1:1 scale vector technical drawing with a title block
-- All five produced by default; pass `formats: [...]` in the `/generate` request body to narrow it (e.g. `["step", "stl"]` for the old behavior)
+- All five formats supported, but only STL is built by `/generate` (drives the live preview) — STEP/IGES/DXF/PDF are deferred to `GET /export/{fmt}/{job_id}`, built and paid for individually, only when actually requested. See the BOT Chain section below for why.
 - DXF/PDF come from a single horizontal section — correct for flat/plate/bracket-style parts, not a full multi-view orthographic drawing
 
 ### ✅ Agent-to-Agent / Pay-Per-Call (`a2mcp/`)
 - Real MCP protocol server mounted at `/mcp` on this same backend
 - One tool, `generate_cad_part`, priced per call via OKX's official Payment SDK for the OKX A2MCP marketplace
 - Session bootstrap and tool discovery stay free; only the actual generation call is gated
+
+### ✅ BOT Chain Payments, Free Preview & Provenance (`botchain_pay.py`, `a2mcp_botchain/`, `design_registry.py`)
+- Separate payment rail from the OKX listing above — native BOT, verified
+  on-chain directly (no SDK, since BOT Chain has no live native payment
+  protocol yet), not X Layer/OKX's Payment SDK
+- `POST /preview` — free, no wallet, no API key, STL-only, rate-limited
+  hard per IP, forces the fallback parser (not DeepSeek) so it can't be
+  used to burn DeepSeek API budget for free
+- `POST /generate` — 5 BOT one-time to mint an API key
+  (`POST /api/keys/generate`), then `BOTCHAIN_PER_CALL_PRICE_BOT` (0.2 by
+  default) per call, STL only
+- `GET /export/{fmt}/{job_id}` — STEP/IGES/DXF/PDF, paid and built
+  individually, on demand
+- `a2mcp_botchain/server.py` — a second MCP mount at `/mcp-bot`, separate
+  from OKX's `/mcp`, with `generate_cad_part` and `export_format` tools
+  gated the same way
+- `contracts/DesignRegistry.sol` + `scripts/deploy_design_registry.py` +
+  `design_registry.py` — on-chain design provenance, anchors a params
+  hash + template version (not just a file hash) on STEP export, so a
+  design is independently *reproducible*, not just notarized. **Not yet
+  deployed** — see "Not yet verified" below.
 
 ## Installation
 
@@ -579,8 +714,15 @@ Multi-format Export: STEP, STL, IGES, DXF, PDF (exporters.py)
 3D Preview (Three.js) + R2/local file storage + sqlite3 job history
 ```
 
-Also exposed as an MCP tool (`a2mcp/`, mounted at `/mcp`), payment-gated
-per call via OKX's official Payment SDK for the OKX A2MCP marketplace.
+Only STL comes out of the main generation flow above — STEP/IGES/DXF/PDF
+are built separately, on demand, via `export_format_for_job` in
+`cad_generator.py`, each gated by its own BOT Chain payment. See the BOT
+Chain section below.
+
+Also exposed as two separate MCP mounts: `a2mcp/` at `/mcp` (OKX's
+official Payment SDK, for the OKX A2MCP marketplace) and
+`a2mcp_botchain/` at `/mcp-bot` (native BOT, verified directly on-chain).
+Different payment rails, deliberately not sharing a mount.
 
 ## Validation Examples
 
