@@ -479,7 +479,7 @@
           Need a mounting bracket, shaft, gear, or custom enclosure? Don't spend hours in SolidWorks drafting from scratch or settling for broken 3D meshes. Describe your part in plain English—NitoCAD constructs precise, parametric B-rep solid geometry using CadQuery and OpenCASCADE, validates dimensions against physical engineering constraints, and exports machine-ready STEP files ready for manufacture.
         </p>
         <p class="mono" style="color:var(--ink-soft);font-size:.85rem;">
-          Free STL preview, no wallet required → STEP / IGES / DXF / PDF at 0.2 BOT per part → callable by AI agents directly over MCP on BOT Chain → on-chain design provenance.
+          Free STL preview, no wallet required → STEP / IGES / DXF / PDF included with one 0.2 BOT generation → callable by AI agents directly over MCP on BOT Chain → on-chain design provenance.
         </p>
         <div class="hero-ctas">
           <a href="#demo" class="btn btn-primary">Try Live Demo</a>
@@ -605,24 +605,24 @@
         <div class="price-card native">
           <span class="tag">Pay as you go</span>
           <h3>Per Generation</h3>
-          <div class="amount"><b>0.2 BOT</b><span>/ export</span></div>
-          <p class="sub">≈ the cost of one STEP, IGES, DXF, or PDF file. Charged only for the format you click.</p>
+          <div class="amount"><b>0.2 BOT</b><span>/ part</span></div>
+          <p class="sub">One payment per part, made when you generate it - covers every export format for that part, however many you download.</p>
           <ul>
             <li>Free STL preview first, always - no wallet needed to try a design</li>
-            <li>Pay per exported format, not per prompt - iterate on the free preview for free</li>
+            <li>0.2 BOT unlocks the part, not the file - STEP, IGES, DXF, and PDF all included, at no extra charge</li>
             <li>No account, no API key - just a wallet and BOT Chain</li>
             <li>Same price whether you're a person on the site or an agent over MCP</li>
           </ul>
-          <a href="#demo" class="btn btn-primary">Try it, then pay per export</a>
+          <a href="#demo" class="btn btn-primary">Try it, then generate for 0.2 BOT</a>
         </div>
         <div class="price-card">
           <span class="tag">For developers &amp; agents</span>
           <h3>API Access</h3>
           <div class="amount"><b>5 BOT</b><span>one-time</span></div>
-          <p class="sub">Issues a service API key for programmatic access, then 0.2 BOT per call after that - same per-call price as the site.</p>
+          <p class="sub">Issues a service API key for programmatic access, then 0.2 BOT per part generated after that - same price and same all-formats-included model as the site.</p>
           <ul>
             <li>One-time 5 BOT key issuance, no recurring fee to hold the key</li>
-            <li>0.2 BOT per generation call after that, billed on-chain per call</li>
+            <li>0.2 BOT per part generated after that - every export format for that part included</li>
             <li>Full MCP endpoint access for autonomous agent-to-agent calls</li>
             <li>Prefer USD instead of BOT? The same skill is listed on OKX's Agent Marketplace over x402 at $0.50/call</li>
           </ul>
@@ -933,14 +933,14 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
   }
 
   async function downloadFormat(base, fmt, jobId, btn){
+    // No payment here - the job's original /generate payment already
+    // covers every export format pulled from it. See
+    // /export/{fmt}/{job_id}'s docstring in web_app.py.
     const originalText = btn.textContent;
     btn.disabled = true;
+    btn.textContent = 'Building...';
     try {
-      const cfg = await getChainConfig(base);
-      btn.textContent = `Paying ${cfg.per_call_price_bot} BOT...`;
-      const txHash = await payBot(base, cfg.per_call_price_bot);
-      btn.textContent = 'Building...';
-      const resp = await fetch(`${base}/export/${fmt}/${jobId}?tx_hash=${txHash}`, {
+      const resp = await fetch(`${base}/export/${fmt}/${jobId}`, {
         headers: { 'X-API-Key': SERVICE_API_KEY },
       });
       if (!resp.ok) {
@@ -1092,36 +1092,35 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 
     // STL already exists (it built the preview) and is served
     // unauthenticated, so it's a direct link. Every other format is
-    // built - and paid for, in BOT - only when its button is clicked.
+    // built on demand when its button is clicked - included in the
+    // one payment already made at generation time, not billed again.
     //
     // isPreview MUST gate the paid buttons off entirely, not just
     // disable them - a /preview job's user_id is "anonymous", which
-    // never matches any real API key's owner. Without this check,
-    // clicking a format button on a free preview would charge 0.2 BOT
-    // and then get rejected by /export's ownership check, since
-    // there's no wallet that owns an anonymous job. See POST /preview's
-    // own docstring for why preview jobs are deliberately unclaimable.
+    // never matches any real API key's owner, so /export's ownership
+    // check would 404 it regardless. Showing the buttons anyway would
+    // just be a guaranteed-to-fail click, not a pricing risk (exports
+    // aren't separately charged either way) - still hidden because a
+    // button that can only ever fail has no reason to be there. See
+    // POST /preview's own docstring for why preview jobs are
+    // deliberately unclaimable.
     const formatLabels = {
       step: 'STEP (3D solid)',
       iges: 'IGES (3D solid)',
       dxf: 'DXF (2D cut layers)',
       pdf: 'PDF (1:1 drawing)',
     };
-    // chainConfig is already populated by this point on the non-preview
-    // path (submitBtn awaits getChainConfig before ever reaching here),
-    // so this is safe to read synchronously rather than re-fetching.
-    const exportPrice = (chainConfig && chainConfig.per_call_price_bot) ?? '0.2';
     let links = downloadStlUrl ? `<a href="${downloadStlUrl}" target="_blank" rel="noopener">↓ STL (mesh)</a>` : '';
     if (data.job_id && !isPreview) {
       for (const [fmt, label] of Object.entries(formatLabels)) {
-        links += `<button class="btn btn-ghost" onclick="downloadFormat('${base}','${fmt}','${data.job_id}',event)">↓ ${label} — ${exportPrice} BOT</button>`;
+        links += `<button class="btn btn-ghost" onclick="downloadFormat('${base}','${fmt}','${data.job_id}',event)">↓ ${label} (included)</button>`;
       }
     }
     let meta = '';
     if (isPreview) {
       meta = '<p class="demo-dl-meta">Free preview - STL only, not exportable. Use "Generate + Pay in BOT" with the same description for STEP/IGES/DXF/PDF access.</p>';
     } else if (data.job_id) {
-      meta = `<p class="demo-dl-meta">Job <code>${data.job_id}</code> - STEP/IGES/DXF/PDF are built individually at 0.2 BOT each, only when you click a format.</p>`;
+      meta = `<p class="demo-dl-meta">Job <code>${data.job_id}</code> - your generation payment already covers STEP/IGES/DXF/PDF, built individually only when you click a format, at no extra charge.</p>`;
     }
     downloadsEl.innerHTML = meta + `<div class="demo-dl-links">${links}</div>`;
 
