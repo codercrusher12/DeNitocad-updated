@@ -143,8 +143,8 @@ class GenerateRequest(BaseModel):
     # No longer honored - /generate now always builds STL only (the
     # preview). Kept on the model so old callers that still send it don't
     # get a 422 on an unrecognized field; the value is ignored. Every
-    # other format is deferred to GET /export/{fmt}/{job_id}, paid and
-    # built on demand - see easycad's decision log for why.
+    # other format is deferred to GET /export/{fmt}/{job_id}, built on
+    # demand but not separately billed - see that endpoint's docstring.
     formats: list[str] | None = None
     # Proof of the settings.BOTCHAIN_PER_CALL_PRICE_BOT native-BOT
     # payment to settings.TREASURY_ADDRESS on BOT Chain - see
@@ -471,7 +471,7 @@ async def root():
                 <input type="text" id="apiKey" placeholder="DeepSeek API Key" style="width: 250px; margin-left: 10px; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
                 <br><br>
                 <div id="formatOptions">
-                    <strong>Available on download (built on demand, paid per format):</strong>
+                    <strong>Available on download (included with your generation, no extra charge):</strong>
                     <label style="margin-left: 10px;"><input type="checkbox" class="fmt-checkbox" value="step" checked> STEP (3D solid)</label>
                     <label style="margin-left: 10px;"><input type="checkbox" class="fmt-checkbox" value="iges"> IGES (3D solid)</label>
                     <label style="margin-left: 10px;"><input type="checkbox" class="fmt-checkbox" value="dxf"> DXF (2D cut layers)</label>
@@ -645,15 +645,16 @@ async def root():
                 // get_current_key), and neither of those can set custom
                 // headers on a GET. fetch() + blob is the correct way to
                 // download an authenticated file, not a workaround.
+                //
+                // No payment here - the job's original /generate payment
+                // already covers every export format pulled from it. See
+                // /export/{fmt}/{job_id}'s docstring in web_app.py.
                 const btn = event.target;
                 const originalText = btn.textContent;
                 btn.disabled = true;
+                btn.textContent = 'Building...';
                 try {
-                    const cfg = await getChainConfig();
-                    btn.textContent = `Paying ${cfg.per_call_price_bot} BOT...`;
-                    const txHash = await payBot(cfg.per_call_price_bot);
-                    btn.textContent = 'Building...';
-                    const resp = await fetch(`/export/${fmt}/${jobId}?tx_hash=${txHash}`, {
+                    const resp = await fetch(`/export/${fmt}/${jobId}`, {
                         headers: { 'X-API-Key': SERVICE_API_KEY },
                     });
                     if (!resp.ok) {
@@ -896,9 +897,11 @@ async def root():
                         // STL already exists on disk (it built the preview,
                         // and is served unauthenticated - see
                         // /download/stl/{filename}), so it's a direct link.
-                        // Every other checked format is built - and paid
-                        // for - only when its button is actually clicked;
-                        // see downloadFormat().
+                        // Every other checked format is built on demand
+                        // when its button is clicked, but not separately
+                        // billed - this job's one /generate payment
+                        // already covers every format pulled from it;
+                        // see downloadFormat() and /export/{fmt}/{job_id}.
                         const formatLabels = {
                             step: 'STEP (3D solid)',
                             iges: 'IGES (3D solid)',
@@ -911,7 +914,7 @@ async def root():
                         document.querySelectorAll('.fmt-checkbox').forEach(cb => {
                             if (cb.checked) {
                                 const label = formatLabels[cb.value];
-                                html += `<button onclick="downloadFormat('${cb.value}', '${data.job_id}')">📥 Download ${label} (${chainConfig ? chainConfig.per_call_price_bot : '0.2'} BOT)</button>`;
+                                html += `<button onclick="downloadFormat('${cb.value}', '${data.job_id}')">📥 Download ${label} (included)</button>`;
                             }
                         });
                         html += '</div>';
@@ -1015,12 +1018,14 @@ async def generate_cad(
 ):
     """Generate CAD from description. Requires X-API-Key (see
     POST /api/keys/generate) AND proof of a BOTCHAIN_PER_CALL_PRICE_BOT
-    payment (tx_hash). Rate-limited per IP (RATE_LIMIT_GENERATE, default
-    20/minute) - each call does real CadQuery/OCCT work.
+    payment (tx_hash). This is the only payment for the whole job - see
+    GET /export/{fmt}/{job_id}'s docstring. Rate-limited per IP
+    (RATE_LIMIT_GENERATE, default 20/minute) - each call does real
+    CadQuery/OCCT work.
 
     Only STL is built here (the preview) - STEP/IGES/DXF/PDF are
-    deferred to GET /export/{fmt}/{job_id}, paid and built separately,
-    only for formats actually requested. See easycad's decision log."""
+    deferred to GET /export/{fmt}/{job_id}, built on demand, only for
+    formats actually requested, but not billed again."""
     try:
         botchain_pay.verify_and_record_payment(
             body.tx_hash,
@@ -1049,29 +1054,22 @@ async def export_on_demand(
     request: Request,
     fmt: str,
     job_id: str,
-    tx_hash: str,
     key_info: Annotated[dict, Depends(get_current_key)],
 ):
     """Build (or reuse a same-instance cached build of) exactly one
-    export format for an already-generated job, on demand, paid per
-    call. expected_sender=key_info["user_id"] means the payment must
-    come from the same wallet the calling API key is bound to - see
-    botchain_pay.py's module docstring for why (a ShieldGuard audit
-    finding: without this, any valid unused tx hash paying the treasury,
-    including someone else's, could be spent against someone else's
-    call). Rate-limited the same as /generate - this does real
-    CadQuery/OCCT work, same as generation itself."""
-    try:
-        botchain_pay.verify_and_record_payment(
-            tx_hash,
-            purpose="generate",
-            min_amount_bot=botchain_pay.PER_CALL_PRICE_BOT,
-            user_id=key_info["user_id"],
-            expected_sender=key_info["user_id"],
-        )
-    except PaymentError as exc:
-        raise HTTPException(status_code=402, detail=exc.message) from exc
+    export format for an already-generated job, on demand.
 
+    No separate payment here, on purpose: the BOTCHAIN_PER_CALL_PRICE_BOT
+    payment made at POST /generate time already covers this job in full,
+    including every export format pulled from it - a job isn't billed
+    per format, it's billed once, at generation. Ownership is enough to
+    gate this: `job["user_id"] != key_info["user_id"]` below already
+    proves the caller is the same wallet that paid to create the job, so
+    a second payment would just be charging twice for work already paid
+    for once. (This used to require its own tx_hash and re-charge
+    BOTCHAIN_PER_CALL_PRICE_BOT per format - that was the bug reported
+    as "charged 0.2 BOT per format on top of the 0.2 BOT generation
+    charge, for one job." Fixed here, not by discounting anything.)"""
     job = db.get_job(job_id)
     if job is None or job["user_id"] != key_info["user_id"]:
         raise HTTPException(status_code=404, detail="Job not found")
