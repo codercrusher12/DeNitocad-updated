@@ -18,12 +18,14 @@ import db
 from a2mcp.server import mcp_app, mcp_app_gated
 from a2mcp_botchain.server import mcp_app as mcp_app_botchain
 import botchain_pay
+import prompt_refine
+import wallet_auth
 from cad_generator import CADGenerator
 from config import settings
+from eth_utils import is_address
 from exceptions import GenerationError, PaymentError, UnsupportedFormatError, register_exception_handlers
 from file_safety import safe_output_path
 from logging_config import configure_logging, get_logger, set_request_id
-from security import get_current_key
 
 configure_logging(level=settings.LOG_LEVEL, fmt=settings.LOG_FORMAT)
 logger = get_logger(__name__)
@@ -57,7 +59,8 @@ app = FastAPI(
     lifespan=lifespan,
     # Hide interactive docs in production by default - flip DOCS_ENABLED
     # (via ENVIRONMENT) if you want them public; they leak the full
-    # request/response schema and every route including /api/keys/generate.
+    # request/response schema and every route including /auth/* and
+    # /credits/*.
     docs_url="/docs" if not settings.is_production else None,
     redoc_url="/redoc" if not settings.is_production else None,
 )
@@ -136,8 +139,9 @@ class GenerateRequest(BaseModel):
     # explicitly. The public demo frontend sends neither, relying on auto.
     use_deepseek: bool | None = None
     # NOTE: this is the caller's own DeepSeek key, used to parse the
-    # description - unrelated to the X-API-Key header that authenticates
-    # against this service. Two different keys, two different purposes.
+    # description - unrelated to the Authorization: Bearer <session_id>
+    # header that authenticates the wallet session against this
+    # service. Two different keys, two different purposes.
     api_key: str | None = None
     model: str = "deepseek-v4-flash"
     # No longer honored - /generate now always builds STL only (the
@@ -146,12 +150,11 @@ class GenerateRequest(BaseModel):
     # other format is deferred to GET /export/{fmt}/{job_id}, built on
     # demand but not separately billed - see that endpoint's docstring.
     formats: list[str] | None = None
-    # Proof of the settings.BOTCHAIN_PER_CALL_PRICE_BOT native-BOT
-    # payment to settings.TREASURY_ADDRESS on BOT Chain - see
-    # botchain_pay.py. Required; this specific endpoint has no free
-    # tier - see POST /preview for the free, STL-only, no-wallet route
-    # people can try before paying anything.
-    tx_hash: str
+    # tx_hash removed here - /generate no longer takes a payment
+    # directly. It now spends 1 credit (db.consume_credit) from the
+    # signed-in wallet's balance instead - see POST /credits/purchase
+    # to top that balance up, and wallet_auth.py for how the wallet
+    # itself gets identified (a session, not an API key).
 
     @field_validator("description")
     @classmethod
@@ -162,9 +165,9 @@ class GenerateRequest(BaseModel):
 
 
 class PreviewRequest(BaseModel):
-    """POST /preview - free, no wallet, no API key, STL-only. See that
-    route's docstring for why it forces the fallback parser and why
-    the resulting job isn't later upgradeable to a paid export."""
+    """POST /preview - free, no wallet, no signed-in session, STL-only.
+    See that route's docstring for why it forces the fallback parser and
+    why the resulting job isn't later upgradeable to a paid export."""
     description: str = Field(..., min_length=1, max_length=4000)
 
     @field_validator("description")
@@ -200,10 +203,6 @@ class GenerateResponse(BaseModel):
     error_type: str | None = None
 
 
-class ApiKeyResponse(BaseModel):
-    api_key: str
-
-
 class HealthResponse(BaseModel):
     status: str
     version: str
@@ -215,38 +214,242 @@ class ReadinessResponse(BaseModel):
     checks: dict[str, bool]
 
 
-class KeyGenerateRequest(BaseModel):
-    # Proof of the settings.BOTCHAIN_KEY_ISSUE_PRICE_BOT native-BOT
-    # payment to settings.TREASURY_ADDRESS - see botchain_pay.py.
+# NOTE: the old POST /api/keys/generate endpoint (and its
+# ApiKeyResponse/KeyGenerateRequest models) lived here - issuing an
+# API key for a one-time BOTCHAIN_KEY_ISSUE_PRICE_BOT payment, cached
+# in one browser via localStorage. Retired: wallet_auth.py's free,
+# signature-based sign-in replaced it (see that module's docstring),
+# and /generate + /export + /api/jobs* now all authenticate via
+# wallet_auth.get_current_wallet instead of security.get_current_key.
+# db.py's api_keys table and create_api_key/validate_api_key are gone
+# too - see db.py's own module docstring. Going forward only, per the
+# project's own migration decision: no conversion path for old keys.
+
+
+# --------------------------------------------------------- wallet auth ----
+# Sign-In-With-Wallet: the free, signature-based login that replaced
+# the API-key-bought-with-a-payment model noted above. See
+# wallet_auth.py's module docstring for the full flow.
+
+class NonceRequest(BaseModel):
+    wallet_address: str
+
+
+class VerifyRequest(BaseModel):
+    wallet_address: str
+    nonce: str
+    signature: str
+
+
+@app.post("/auth/nonce")
+@limiter.limit("20/minute")
+async def auth_nonce(request: Request, body: NonceRequest):
+    """Step 1 of wallet sign-in. Unauthenticated and free (no payment,
+    no gas), so it's the one wallet-auth endpoint that could be
+    hammered to grow the nonces table if left unlimited - rate-limited
+    generously but not unlimited."""
+    if not is_address(body.wallet_address):
+        raise HTTPException(status_code=422, detail="Not a valid wallet address")
+    return wallet_auth.issue_nonce(body.wallet_address)
+
+
+@app.post("/auth/verify")
+@limiter.limit("20/minute")
+async def auth_verify(request: Request, body: VerifyRequest):
+    """Step 2 of wallet sign-in. Returns a session_id - send it back on
+    every subsequent request as 'Authorization: Bearer <session_id>'."""
+    return wallet_auth.verify_and_create_session(body.wallet_address, body.nonce, body.signature)
+
+
+@app.get("/auth/me")
+async def auth_me(wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)]):
+    """Lets the frontend check 'am I still signed in' and show the
+    connected address, without that check itself costing anything or
+    touching the chain."""
+    return {"wallet_address": wallet["wallet_address"]}
+
+
+@app.post("/auth/logout")
+async def auth_logout(wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)]):
+    """Explicit sign-out - deletes the session row immediately, rather
+    than leaving the frontend to just forget the session_id and wait
+    for it to expire on its own."""
+    db.delete_session(wallet["session_id"])
+    return {"success": True}
+
+
+# ------------------------------------------------------------ credits ----
+# Prepaid generation balance per wallet - see db.py's own comment on
+# wallet_credits for why pay-as-you-go and bulk packs are one mechanism
+# underneath. Requires a wallet session (not an API key) - this is the
+# new /generate's identity path, see that endpoint below.
+
+def _credit_tiers() -> dict[str, tuple]:
+    """tier name -> (price_bot, credits_granted). A function, not a
+    module-level constant, so it always reads the current
+    botchain_pay.* values (tests / different environments can patch
+    those) rather than freezing them at import time."""
+    return {
+        "single": (botchain_pay.CREDIT_PRICE_BOT, 1),
+        "pack_1000": (botchain_pay.PACK_1000_PRICE_BOT, settings.BOTCHAIN_PACK_1000_CREDITS),
+        "pack_10000": (botchain_pay.PACK_10000_PRICE_BOT, settings.BOTCHAIN_PACK_10000_CREDITS),
+    }
+
+
+class CreditsPurchaseRequest(BaseModel):
     tx_hash: str
+    tier: str  # "single" | "pack_1000" | "pack_10000" - validated below,
+    # not with Literal[...], so an unrecognized tier gets this endpoint's
+    # own clear 422 message rather than FastAPI's generic enum error.
 
 
-@app.post("/api/keys/generate", response_model=ApiKeyResponse)
-@limiter.limit(settings.RATE_LIMIT_KEY_ISSUE)
-async def generate_service_key(request: Request, body: KeyGenerateRequest):
-    """
-    Issues a new service API key for this backend (X-API-Key header on
-    /generate), after verifying a one-time BOTCHAIN_KEY_ISSUE_PRICE_BOT
-    payment to the treasury address on BOT Chain. The key's user_id is
-    bound to the paying wallet address itself (returned by
-    verify_and_record_payment), not a caller-supplied value - a key is
-    tied to whoever actually paid for it, which is what later lets
-    /generate and /export bind their own per-call payments back to the
-    same wallet via expected_sender. Rate-limited per IP
-    (RATE_LIMIT_KEY_ISSUE, default 5/hour).
-    """
+@app.get("/credits/balance")
+async def credits_balance(wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)]):
+    balance = db.get_credit_balance(wallet["wallet_address"])
+    return {
+        "wallet_address": wallet["wallet_address"],
+        "balance": balance,
+        # Convenience flag so the frontend doesn't need to know
+        # BULK_TIER_CREDIT_THRESHOLD itself to decide whether to show
+        # the prompt-refinement chat entry point - it's also exposed
+        # directly via GET /config/chain for anywhere that needs the
+        # raw number (e.g. an upsell message before reaching it).
+        "prompt_refine_eligible": balance >= settings.BULK_TIER_CREDIT_THRESHOLD,
+    }
+
+
+@app.post("/credits/purchase")
+@limiter.limit(settings.RATE_LIMIT_GENERATE)
+async def credits_purchase(
+    request: Request,
+    body: CreditsPurchaseRequest,
+    wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)],
+):
+    """Verifies a payment at the declared tier's exact price and credits
+    the signed-in wallet accordingly. expected_sender is the signed-in
+    wallet, not left open - otherwise anyone could grab someone else's
+    qualifying tx_hash off-chain (chain data is public) and credit
+    their own account with it instead. See botchain_pay.py's module
+    docstring for the same reasoning applied to /generate and
+    /export."""
+    tiers = _credit_tiers()
+    if body.tier not in tiers:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown tier {body.tier!r} - must be one of {sorted(tiers)}.",
+        )
+    price_bot, credits_granted = tiers[body.tier]
+
     try:
-        sender = botchain_pay.verify_and_record_payment(
+        botchain_pay.verify_and_record_payment(
             body.tx_hash,
-            purpose="key_issue",
-            min_amount_bot=botchain_pay.KEY_ISSUE_PRICE_BOT,
-            user_id="pending",
+            purpose=f"credits_{body.tier}",
+            min_amount_bot=price_bot,
+            user_id=wallet["wallet_address"],
+            expected_sender=wallet["wallet_address"],
         )
     except PaymentError as exc:
         raise HTTPException(status_code=402, detail=exc.message) from exc
-    raw_key = db.create_api_key(user_id=sender)
-    logger.info("issued new api key", extra={"user_id": sender})
-    return ApiKeyResponse(api_key=raw_key)
+
+    new_balance = db.add_credits(wallet["wallet_address"], credits_granted)
+    logger.info(
+        "credits purchased",
+        extra={"wallet_address": wallet["wallet_address"], "tier": body.tier, "credits_granted": credits_granted},
+    )
+    return {"wallet_address": wallet["wallet_address"], "credits_granted": credits_granted, "balance": new_balance}
+
+
+# ------------------------------------------------------ prompt refinement ----
+# A perk for bulk-tier wallets, not a separate purchase - see
+# prompt_refine.py's module docstring and config.py's comment on
+# BULK_TIER_CREDIT_THRESHOLD. Never touches the CAD engine.
+
+class PromptRefineMessage(BaseModel):
+    role: str  # "user" | "assistant" - validated below, not with
+    # Literal[...], so a bad value gets this endpoint's own clear 422
+    # rather than FastAPI's generic enum error.
+    content: str
+
+    @field_validator("role")
+    @classmethod
+    def role_must_be_user_or_assistant(cls, v: str) -> str:
+        if v not in ("user", "assistant"):
+            raise ValueError('role must be "user" or "assistant"')
+        return v
+
+    @field_validator("content")
+    @classmethod
+    def content_within_length_limit(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("content cannot be blank")
+        if len(v) > settings.PROMPT_REFINE_MAX_MESSAGE_CHARS:
+            raise ValueError(
+                f"content exceeds {settings.PROMPT_REFINE_MAX_MESSAGE_CHARS} characters"
+            )
+        return v
+
+
+class PromptRefineRequest(BaseModel):
+    messages: list[PromptRefineMessage]
+
+    @field_validator("messages")
+    @classmethod
+    def messages_within_history_limit(cls, v: list) -> list:
+        if not v:
+            raise ValueError("messages cannot be empty")
+        if len(v) > settings.PROMPT_REFINE_MAX_HISTORY_MESSAGES:
+            raise ValueError(
+                f"conversation exceeds {settings.PROMPT_REFINE_MAX_HISTORY_MESSAGES} messages - "
+                "start a new refinement session"
+            )
+        if v[-1].role != "user":
+            raise ValueError("the last message must be from the user - nothing to reply to otherwise")
+        return v
+
+
+@app.post("/prompt-refine")
+@limiter.limit(settings.RATE_LIMIT_PROMPT_REFINE)
+async def prompt_refine_chat(
+    request: Request,
+    body: PromptRefineRequest,
+    wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)],
+):
+    """Chat-style prompt refinement - DeepSeek only, never calls the CAD
+    engine (see prompt_refine.py's module docstring). Gated on the
+    signed-in wallet's CURRENT credit balance being at or above
+    BULK_TIER_CREDIT_THRESHOLD, not a permanent "ever bought a pack"
+    flag - access turns off the moment the balance drops below it, on
+    the same lookup /generate already does for spending a credit.
+    Costs nothing to call (no credit spent, no BOT payment) - rate-
+    limited on its own (RATE_LIMIT_PROMPT_REFINE) instead, since a real
+    DeepSeek call still costs real tokens with no payment attached to
+    absorb abuse the way /generate's credit spend naturally does."""
+    balance = db.get_credit_balance(wallet["wallet_address"])
+    if balance < settings.BULK_TIER_CREDIT_THRESHOLD:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Prompt refinement is available to wallets holding at least "
+                f"{settings.BULK_TIER_CREDIT_THRESHOLD} credits (you have {balance}). "
+                "Buy a credit pack via POST /credits/purchase to unlock it."
+            ),
+        )
+    if not settings.DEEPSEEK_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Prompt refinement isn't configured on this server right now.",
+        )
+
+    try:
+        reply = prompt_refine.refine_prompt(
+            [{"role": m.role, "content": m.content} for m in body.messages],
+            api_key=settings.DEEPSEEK_API_KEY,
+            model=settings.PROMPT_REFINE_MODEL,
+        )
+    except prompt_refine.PromptRefineError as exc:
+        raise HTTPException(status_code=502, detail=exc.message) from exc
+
+    return {"reply": reply}
 
 
 @app.get("/config/chain")
@@ -263,8 +466,17 @@ async def get_chain_config():
         "rpc_url": settings.botchain_rpc_url,
         "explorer_url": settings.botchain_explorer_url,
         "currency_symbol": "BOT",
-        "key_issue_price_bot": float(botchain_pay.KEY_ISSUE_PRICE_BOT),
-        "per_call_price_bot": float(botchain_pay.PER_CALL_PRICE_BOT),
+        # Credits pricing - see POST /credits/purchase and config.py's
+        # own comment on why the two packs share a per-credit rate.
+        # (key_issue_price_bot / per_call_price_bot used to live here -
+        # removed along with the API-key system they priced; nothing
+        # charges those amounts anymore, see botchain_pay.py.)
+        "credit_price_bot": float(botchain_pay.CREDIT_PRICE_BOT),
+        "pack_1000_price_bot": float(botchain_pay.PACK_1000_PRICE_BOT),
+        "pack_1000_credits": settings.BOTCHAIN_PACK_1000_CREDITS,
+        "pack_10000_price_bot": float(botchain_pay.PACK_10000_PRICE_BOT),
+        "pack_10000_credits": settings.BOTCHAIN_PACK_10000_CREDITS,
+        "bulk_tier_credit_threshold": settings.BULK_TIER_CREDIT_THRESHOLD,
     }
 
 @app.get("/", response_class=HTMLResponse)
@@ -446,6 +658,9 @@ async def root():
     </head>
     <body>
         <h1>🔧 Natural Language to Parametric CAD</h1>
+        <div style="text-align:center;margin-bottom:20px;">
+            <button id="walletBtn" onclick="handleWalletButtonClick()" style="background:#2d3748;color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:0.9rem;">Connect Wallet</button>
+        </div>
         
         <div class="container">
             <div class="panel">
@@ -483,6 +698,11 @@ async def root():
                 <button onclick="previewFree()" id="previewBtn" style="background:#6c757d;">Preview (Free, STL only)</button>
                 <button onclick="generate()" id="generateBtn">Generate + Pay in BOT</button>
                 <p id="costNote" style="font-size:0.85rem;color:#6c757d;margin-top:6px;"></p>
+                <div style="margin-top:6px;">
+                    <button onclick="handleBuyCreditsClick('single')" style="background:#e9ecef;color:#212529;border:none;padding:6px 12px;border-radius:5px;cursor:pointer;font-size:0.8rem;margin-right:6px;">Buy 1 credit</button>
+                    <button onclick="handleBuyCreditsClick('pack_1000')" style="background:#e9ecef;color:#212529;border:none;padding:6px 12px;border-radius:5px;cursor:pointer;font-size:0.8rem;margin-right:6px;">Buy 1000 credits</button>
+                    <button onclick="handleBuyCreditsClick('pack_10000')" style="background:#e9ecef;color:#212529;border:none;padding:6px 12px;border-radius:5px;cursor:pointer;font-size:0.8rem;">Buy 10000 credits</button>
+                </div>
                 <p style="font-size:0.85rem;color:#6c757d;margin-top:6px;">Preview is free and unlimited detail-wise, but STL only and not exportable later - it's a fresh, separate job. Once you're happy with the description, use "Generate + Pay in BOT" for a version you can export to STEP/IGES/DXF/PDF.</p>
             </div>
             
@@ -507,7 +727,6 @@ async def root():
             import { STLLoader } from "three/addons/loaders/STLLoader.js";
 
             let scene, camera, renderer, controls, currentMesh;
-            let SERVICE_API_KEY = null; // this backend's own X-API-Key, not the DeepSeek key
             let chainConfig = null;
 
             async function getChainConfig() {
@@ -549,6 +768,102 @@ async def root():
                 return account;
             }
 
+            // ------------------------------------------------- wallet sign-in ----
+            // Sign-In-With-Wallet: connect + sign a free message (no gas,
+            // nothing on-chain) to get a session, replacing the old "pay
+            // 5 BOT for an API key cached in this browser" identity model.
+            // Same-origin page, so no API base to key the cache by - one
+            // flat localStorage key is enough, unlike frontend/index.html's
+            // per-base version. See wallet_auth.py.
+            function getWalletSession() {
+                const raw = localStorage.getItem('nl_to_cad_wallet_session');
+                if (!raw) return null;
+                try {
+                    const session = JSON.parse(raw);
+                    if (new Date(session.expires_at) <= new Date()) {
+                        localStorage.removeItem('nl_to_cad_wallet_session');
+                        return null;
+                    }
+                    return session;
+                } catch (err) {
+                    return null;
+                }
+            }
+
+            function setWalletSession(session) {
+                localStorage.setItem('nl_to_cad_wallet_session', JSON.stringify(session));
+            }
+
+            function clearWalletSession() {
+                localStorage.removeItem('nl_to_cad_wallet_session');
+            }
+
+            function updateWalletUI() {
+                const session = getWalletSession();
+                const btn = document.getElementById('walletBtn');
+                if (!btn) return;
+                btn.textContent = session
+                    ? session.wallet_address.slice(0, 6) + '…' + session.wallet_address.slice(-4)
+                    : 'Connect Wallet';
+            }
+
+            async function signInWithWallet() {
+                const account = await connectWallet();
+                const nonceResp = await fetch('/auth/nonce', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ wallet_address: account }),
+                });
+                const nonceData = await nonceResp.json();
+                if (!nonceResp.ok) throw new Error(nonceData.detail || 'Could not start sign-in.');
+
+                const signature = await window.ethereum.request({
+                    method: 'personal_sign',
+                    params: [nonceData.message, account],
+                });
+
+                const verifyResp = await fetch('/auth/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ wallet_address: account, nonce: nonceData.nonce, signature }),
+                });
+                const session = await verifyResp.json();
+                if (!verifyResp.ok) throw new Error(session.detail || 'Sign-in failed.');
+
+                setWalletSession(session);
+                updateWalletUI();
+                return session;
+            }
+
+            async function signOutOfWallet() {
+                const session = getWalletSession();
+                clearWalletSession();
+                updateWalletUI();
+                if (session) {
+                    try {
+                        await fetch('/auth/logout', {
+                            method: 'POST',
+                            headers: { 'Authorization': 'Bearer ' + session.session_id },
+                        });
+                    } catch (err) { /* already signed out client-side regardless */ }
+                }
+            }
+
+            async function handleWalletButtonClick() {
+                const existing = getWalletSession();
+                if (existing) {
+                    if (window.confirm(`Connected as ${existing.wallet_address}. Disconnect?`)) {
+                        await signOutOfWallet();
+                    }
+                    return;
+                }
+                try {
+                    await signInWithWallet();
+                } catch (err) {
+                    alert('Wallet sign-in failed: ' + err.message);
+                }
+            }
+
             async function payBot(amountBot) {
                 const cfg = await getChainConfig();
                 const account = await connectWallet();
@@ -568,94 +883,104 @@ async def root():
                 return txHash;
             }
 
-            async function ensureServiceKey() {
-                // Same localStorage-caching shape as before, but issuing a
-                // key now costs a real payment - see /api/keys/generate.
-                const cached = localStorage.getItem('nl_to_cad_service_key');
-                if (cached) {
-                    SERVICE_API_KEY = cached;
-                    return;
-                }
-                const cfg = await getChainConfig();
-                const resultDiv = document.getElementById('result');
-                resultDiv.innerHTML = `<div class="loading"><div class="spinner"></div><p>Waiting for payment (1 of 2): ${cfg.key_issue_price_bot} BOT one-time API key...</p></div>`;
-                const txHash = await payBot(cfg.key_issue_price_bot);
-                const resp = await fetch('/api/keys/generate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tx_hash: txHash }),
+            // Replaces the old hasServiceKey/SERVICE_API_KEY/
+            // ensureServiceKey model entirely - see the wallet sign-in
+            // block above for identity, and db.py's wallet_credits
+            // table for what "credits" means server-side.
+            async function fetchCreditsBalance() {
+                const session = getWalletSession();
+                if (!session) return null;
+                const resp = await fetch('/credits/balance', {
+                    headers: { 'Authorization': 'Bearer ' + session.session_id },
                 });
+                if (!resp.ok) return null;
                 const data = await resp.json();
-                if (!resp.ok) {
-                    throw new Error(data.detail || 'Key issuance failed');
-                }
-                SERVICE_API_KEY = data.api_key;
-                localStorage.setItem('nl_to_cad_service_key', SERVICE_API_KEY);
-                updateCostNote();
+                return data.balance;
             }
 
-            // Whether THIS browser already holds a cached key - the only
-            // thing that determines whether clicking "Generate + Pay in
-            // BOT" is about to trigger one payment or two.
-            function hasServiceKey() {
-                return !!localStorage.getItem('nl_to_cad_service_key');
-            }
-
-            // Keeps the visible price note under the buttons honest at
-            // every point, so a wallet prompt is never the first time
-            // the one-time key fee gets mentioned. Called on load, after
-            // key issuance, and after every generate attempt.
+            // Keeps the visible cost note honest at every point: shown
+            // before generating, reflects whichever state actually
+            // applies right now - not signed in, signed in with
+            // credits, or signed in with none.
             async function updateCostNote() {
                 const el = document.getElementById('costNote');
                 if (!el) return;
                 try {
                     const cfg = await getChainConfig();
-                    if (hasServiceKey()) {
-                        el.textContent = `Generating costs ${cfg.per_call_price_bot} BOT, paid from your wallet when you click Generate.`;
-                    } else {
-                        const total = Number(cfg.key_issue_price_bot) + Number(cfg.per_call_price_bot);
-                        el.textContent = `First generation on this browser: ${cfg.key_issue_price_bot} BOT one-time (issues your API key) + ${cfg.per_call_price_bot} BOT for this generation = ${total} BOT total, as two separate wallet approvals. Every generation after that is just ${cfg.per_call_price_bot} BOT.`;
+                    const session = getWalletSession();
+                    if (!session) {
+                        el.textContent = `Connect your wallet to generate. Each generation spends 1 credit (${cfg.credit_price_bot} BOT to buy one, or ${cfg.pack_1000_price_bot} BOT for ${cfg.pack_1000_credits}, ${cfg.pack_10000_price_bot} BOT for ${cfg.pack_10000_credits}).`;
+                        return;
                     }
+                    const balance = await fetchCreditsBalance();
+                    if (balance === null) { el.textContent = ''; return; }
+                    el.textContent = balance > 0
+                        ? `You have ${balance} credit${balance === 1 ? '' : 's'}. Generating spends 1 - exports of that job are free after.`
+                        : `You have 0 credits. Buy 1 for ${cfg.credit_price_bot} BOT, or a pack (${cfg.pack_1000_price_bot} BOT for ${cfg.pack_1000_credits}, ${cfg.pack_10000_price_bot} BOT for ${cfg.pack_10000_credits}) below.`;
                 } catch (err) {
                     el.textContent = '';
                 }
             }
 
-            // The one moment this page is about to ask for a wallet
-            // approval the person may not expect: the one-time key fee,
-            // bundled into a "Generate" click as a second silent charge.
-            // Returning users who already hold a key never see this -
-            // nothing surprising left to confirm for them.
-            function confirmFirstChargeIfNeeded(cfg) {
-                if (hasServiceKey()) return true;
-                const total = Number(cfg.key_issue_price_bot) + Number(cfg.per_call_price_bot);
-                return window.confirm(
-                    `This is your first generation on this browser.\n\n` +
-                    `You'll be asked to approve two payments from your wallet:\n` +
-                    `  1. ${cfg.key_issue_price_bot} BOT - one-time API key (only ever charged once)\n` +
-                    `  2. ${cfg.per_call_price_bot} BOT - this generation\n\n` +
-                    `Total: ${total} BOT. Every generation after this one is just ${cfg.per_call_price_bot} BOT.\n\n` +
-                    `Continue?`
-                );
+            // Buys credits at one of the three tiers - pays on-chain,
+            // then registers that payment against the signed-in
+            // wallet's balance. Same call for all three; only the tier
+            // and price differ.
+            async function buyCredits(tier, priceBot) {
+                const session = getWalletSession();
+                if (!session) throw new Error('Connect your wallet first.');
+                const resultDiv = document.getElementById('result');
+                resultDiv.innerHTML = `<div class="loading"><div class="spinner"></div><p>Waiting for payment: ${priceBot} BOT for credits...</p></div>`;
+                const txHash = await payBot(priceBot);
+                resultDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Confirming purchase...</p></div>';
+                const resp = await fetch('/credits/purchase', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + session.session_id,
+                    },
+                    body: JSON.stringify({ tx_hash: txHash, tier }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.detail || 'Credit purchase failed.');
+                updateCostNote();
+                resultDiv.innerHTML = `<div class="loading"><p>Purchase complete - balance: ${data.balance} credits.</p></div>`;
+                return data.balance;
+            }
+
+            async function handleBuyCreditsClick(tier) {
+                try {
+                    if (!getWalletSession()) await signInWithWallet();
+                    const cfg = await getChainConfig();
+                    const priceBot = tier === 'single' ? cfg.credit_price_bot
+                        : tier === 'pack_1000' ? cfg.pack_1000_price_bot
+                        : cfg.pack_10000_price_bot;
+                    await buyCredits(tier, priceBot);
+                } catch (err) {
+                    alert('Purchase failed: ' + err.message);
+                }
             }
 
             async function downloadFormat(fmt, jobId) {
                 // Can't use a plain <a href>/window.open here - the export
-                // route requires X-API-Key as a header (see security.py's
-                // get_current_key), and neither of those can set custom
-                // headers on a GET. fetch() + blob is the correct way to
-                // download an authenticated file, not a workaround.
+                // route requires an Authorization: Bearer <session_id>
+                // header (see wallet_auth.get_current_wallet), and neither
+                // of those can set custom headers on a GET. fetch() + blob
+                // is the correct way to download an authenticated file,
+                // not a workaround.
                 //
                 // No payment here - the job's original /generate payment
                 // already covers every export format pulled from it. See
                 // /export/{fmt}/{job_id}'s docstring in web_app.py.
+                const session = getWalletSession();
+                if (!session) { alert('Your wallet session expired - reconnect and regenerate to download.'); return; }
                 const btn = event.target;
                 const originalText = btn.textContent;
                 btn.disabled = true;
                 btn.textContent = 'Building...';
                 try {
                     const resp = await fetch(`/export/${fmt}/${jobId}`, {
-                        headers: { 'X-API-Key': SERVICE_API_KEY },
+                        headers: { 'Authorization': 'Bearer ' + session.session_id },
                     });
                     if (!resp.ok) {
                         const err = await resp.json().catch(() => ({}));
@@ -862,33 +1187,66 @@ async def root():
                     resultDiv.innerHTML = `<div class="error"><strong>✗ Could not reach pricing info:</strong> ${err.message}</div>`;
                     return;
                 }
-                if (!confirmFirstChargeIfNeeded(cfg)) return;
 
-                resultDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Generating CAD...</p></div>';
                 generateBtn.disabled = true;
                 previewBtn.disabled = true;
-                
+
                 try {
-                    if (!SERVICE_API_KEY) {
-                        await ensureServiceKey();
+                    // Step 1: identity. No API key anymore - a wallet
+                    // session, signed for free, is the only thing
+                    // /generate needs. See wallet_auth.py.
+                    let session = getWalletSession();
+                    if (!session) {
+                        resultDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Connecting wallet...</p></div>';
+                        session = await signInWithWallet();
                     }
-                    resultDiv.innerHTML = `<div class="loading"><div class="spinner"></div><p>Waiting for payment: ${cfg.per_call_price_bot} BOT for this generation...</p></div>`;
-                    const txHash = await payBot(cfg.per_call_price_bot);
+
+                    // Step 2: credits. /generate spends exactly 1 - if
+                    // the balance is 0, this is the one moment a payment
+                    // might be needed, disclosed and confirmed before
+                    // the wallet opens, not bundled silently in.
+                    resultDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Checking credits...</p></div>';
+                    let balance = await fetchCreditsBalance();
+                    if (balance === 0) {
+                        const buy = window.confirm(
+                            `You have 0 credits. Buy 1 for ${cfg.credit_price_bot} BOT to generate this part?\n\n` +
+                            `(For repeated use, ${cfg.pack_1000_price_bot} BOT gets you ${cfg.pack_1000_credits} credits, ` +
+                            `${cfg.pack_10000_price_bot} BOT gets you ${cfg.pack_10000_credits} - see the credit buttons below.)`
+                        );
+                        if (!buy) {
+                            resultDiv.innerHTML = '<p>Cancelled - no payment made.</p>';
+                            generateBtn.disabled = false;
+                            previewBtn.disabled = false;
+                            return;
+                        }
+                        balance = await buyCredits('single', cfg.credit_price_bot);
+                    }
+
+                    // Step 3: generate. No tx_hash, no per-call wallet
+                    // prompt here - the credit spend is server-side and
+                    // atomic (db.consume_credit).
                     resultDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Generating CAD...</p></div>';
-                    const response = await fetch('/generate', {
+                    let response = await fetch('/generate', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'X-API-Key': SERVICE_API_KEY,
+                            'Authorization': 'Bearer ' + session.session_id,
                         },
                         body: JSON.stringify({
                             description: description,
                             use_deepseek: useDeepSeek,
                             api_key: apiKey,
-                            tx_hash: txHash,
                         })
                     });
-                    
+
+                    if (response.status === 401) {
+                        // Session expired/revoked server-side - free to
+                        // fix, just sign in again, no payment involved.
+                        clearWalletSession();
+                        updateWalletUI();
+                        throw new Error('Your wallet session expired - click Generate again to reconnect.');
+                    }
+
                     const data = await response.json();
                     
                     if (data.success) {
@@ -899,9 +1257,9 @@ async def root():
                         // /download/stl/{filename}), so it's a direct link.
                         // Every other checked format is built on demand
                         // when its button is clicked, but not separately
-                        // billed - this job's one /generate payment
-                        // already covers every format pulled from it;
-                        // see downloadFormat() and /export/{fmt}/{job_id}.
+                        // billed - this job's one credit already covers
+                        // every format pulled from it; see downloadFormat()
+                        // and /export/{fmt}/{job_id}.
                         const formatLabels = {
                             step: 'STEP (3D solid)',
                             iges: 'IGES (3D solid)',
@@ -939,9 +1297,15 @@ async def root():
             // type="module" scripts don't leak declarations onto window,
             // so the inline onclick="generate()" / onclick="setExample(...)"
             // handlers in the HTML above need these attached explicitly.
+            // (handleWalletButtonClick was missing this in an earlier pass -
+            // its Connect Wallet button would have thrown "not defined" on
+            // click, since inline onclick runs in global scope, not this
+            // module's scope. Caught here before shipping, not after.)
             window.generate = generate;
             window.previewFree = previewFree;
             window.setExample = setExample;
+            window.handleWalletButtonClick = handleWalletButtonClick;
+            window.handleBuyCreditsClick = handleBuyCreditsClick;
 
             // Initialize viewer on load
             window.addEventListener('load', () => {
@@ -960,6 +1324,11 @@ async def root():
                 // from an explicit Generate click, same as the price
                 // itself only ever being disclosed at that point.
                 updateCostNote();
+                // Safe to check here, unlike the old ensureServiceKey() -
+                // this only reads a cached session and updates the button
+                // label, no wallet popup, no request of any kind unless
+                // the person clicks Connect Wallet themselves.
+                updateWalletUI();
 
                 // Handle window resize
                 window.addEventListener('resize', () => {
@@ -980,9 +1349,10 @@ async def root():
 @app.post("/preview", response_model=GenerateResponse)
 @limiter.limit(settings.RATE_LIMIT_PREVIEW)
 async def preview_cad(request: Request, body: PreviewRequest):
-    """Free STL-only preview - no wallet, no X-API-Key, no BOT payment.
-    Lets someone evaluate NitoCAD before spending anything. Rate-limited
-    hard per IP (RATE_LIMIT_PREVIEW, default 5/hour) since nothing else
+    """Free STL-only preview - no wallet, no signed-in session, no BOT
+    payment. Lets someone evaluate NitoCAD before spending anything.
+    Rate-limited hard per IP (RATE_LIMIT_PREVIEW, default 5/hour) since
+    nothing else
     throttles this route the way a real BOT payment throttles /generate.
 
     Deliberately forces use_deepseek=False - the fallback regex parser,
@@ -993,13 +1363,13 @@ async def preview_cad(request: Request, body: PreviewRequest):
 
     The resulting job is NOT later exportable via
     GET /export/{fmt}/{job_id} - its user_id is "anonymous", which will
-    never match a real wallet-bound API key's user_id. This is
-    deliberate, not a bug: making a preview "upgradeable" to a paid
-    export would mean letting a paid API key claim an existing job by
-    its job_id, and nothing currently stops an anonymous job_id from
-    being seen and claimed by someone other than whoever generated it.
-    Liking a preview means re-submitting the same description through
-    the paid /generate flow - a fresh job, not unlocking this one."""
+    never match a real wallet address. This is deliberate, not a bug:
+    making a preview "upgradeable" to a paid export would mean letting
+    a signed-in wallet claim an existing job by its job_id, and nothing
+    currently stops an anonymous job_id from being seen and claimed by
+    someone other than whoever generated it. Liking a preview means
+    re-submitting the same description through the paid /generate flow
+    - a fresh job, not unlocking this one."""
     result = generator.generate_from_text(
         body.description,
         use_deepseek=False,
@@ -1014,11 +1384,14 @@ async def preview_cad(request: Request, body: PreviewRequest):
 async def generate_cad(
     request: Request,
     body: GenerateRequest,
-    key_info: Annotated[dict, Depends(get_current_key)],
+    wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)],
 ):
-    """Generate CAD from description. Requires X-API-Key (see
-    POST /api/keys/generate) AND proof of a BOTCHAIN_PER_CALL_PRICE_BOT
-    payment (tx_hash). This is the only payment for the whole job - see
+    """Generate CAD from description. Requires a signed-in wallet
+    session (Authorization: Bearer <session_id> - see wallet_auth.py
+    and POST /auth/verify) and spends exactly 1 credit from that
+    wallet's balance (db.consume_credit). No API key, no per-call
+    payment here anymore - top up credits via POST /credits/purchase.
+    This is the only cost for the whole job - see
     GET /export/{fmt}/{job_id}'s docstring. Rate-limited per IP
     (RATE_LIMIT_GENERATE, default 20/minute) - each call does real
     CadQuery/OCCT work.
@@ -1026,23 +1399,21 @@ async def generate_cad(
     Only STL is built here (the preview) - STEP/IGES/DXF/PDF are
     deferred to GET /export/{fmt}/{job_id}, built on demand, only for
     formats actually requested, but not billed again."""
-    try:
-        botchain_pay.verify_and_record_payment(
-            body.tx_hash,
-            purpose="generate",
-            min_amount_bot=botchain_pay.PER_CALL_PRICE_BOT,
-            user_id=key_info["user_id"],
-            expected_sender=key_info["user_id"],
+    if not db.consume_credit(wallet["wallet_address"]):
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                f"Insufficient credits (balance: {db.get_credit_balance(wallet['wallet_address'])}). "
+                "Buy more via POST /credits/purchase."
+            ),
         )
-    except PaymentError as exc:
-        raise HTTPException(status_code=402, detail=exc.message) from exc
 
     result = generator.generate_from_text(
         body.description,
         use_deepseek=body.use_deepseek,
         api_key=body.api_key,
         model=body.model,
-        user_id=key_info["user_id"],
+        user_id=wallet["wallet_address"],
         formats=["stl"],
     )
     return result
@@ -1054,24 +1425,25 @@ async def export_on_demand(
     request: Request,
     fmt: str,
     job_id: str,
-    key_info: Annotated[dict, Depends(get_current_key)],
+    wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)],
 ):
     """Build (or reuse a same-instance cached build of) exactly one
     export format for an already-generated job, on demand.
 
-    No separate payment here, on purpose: the BOTCHAIN_PER_CALL_PRICE_BOT
-    payment made at POST /generate time already covers this job in full,
-    including every export format pulled from it - a job isn't billed
-    per format, it's billed once, at generation. Ownership is enough to
-    gate this: `job["user_id"] != key_info["user_id"]` below already
-    proves the caller is the same wallet that paid to create the job, so
-    a second payment would just be charging twice for work already paid
-    for once. (This used to require its own tx_hash and re-charge
-    BOTCHAIN_PER_CALL_PRICE_BOT per format - that was the bug reported
-    as "charged 0.2 BOT per format on top of the 0.2 BOT generation
-    charge, for one job." Fixed here, not by discounting anything.)"""
+    No separate charge here, on purpose: the 1 credit spent at
+    POST /generate time already covers this job in full, including
+    every export format pulled from it - a job isn't billed per
+    format, it's billed once, at generation. Ownership is enough to
+    gate this: `job["user_id"] != wallet["wallet_address"]` below
+    already proves the caller is the same wallet that spent the credit
+    to create the job, so charging again would just be double-billing
+    work already paid for once. (This used to require its own tx_hash
+    and re-charge BOTCHAIN_PER_CALL_PRICE_BOT per format - that was the
+    bug reported as "charged 0.2 BOT per format on top of the 0.2 BOT
+    generation charge, for one job." Fixed here, not by discounting
+    anything.)"""
     job = db.get_job(job_id)
-    if job is None or job["user_id"] != key_info["user_id"]:
+    if job is None or job["user_id"] != wallet["wallet_address"]:
         raise HTTPException(status_code=404, detail="Job not found")
     try:
         file_path, _part_type = generator.export_format_for_job(job_id, fmt)
@@ -1088,13 +1460,15 @@ async def export_on_demand(
 
 
 @app.get("/api/jobs")
-async def list_jobs(key_info: Annotated[dict, Depends(get_current_key)]):
-    """Audit history for the authenticated key - every job it has run."""
-    return db.list_jobs(user_id=key_info["user_id"])
+async def list_jobs(wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)]):
+    """Audit history for the signed-in wallet - every job it has run.
+    This is also the backend a future profile page reads from; nothing
+    more to build here for that beyond the frontend itself."""
+    return db.list_jobs(user_id=wallet["wallet_address"])
 
 
 @app.get("/api/jobs/{job_id}")
-async def get_job(job_id: str, key_info: Annotated[dict, Depends(get_current_key)]):
+async def get_job(job_id: str, wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)]):
     """
     Look up one job by id. Generation here is synchronous (1-3s, no
     Celery queue - see README), so this isn't a poll-for-completion
@@ -1103,7 +1477,7 @@ async def get_job(job_id: str, key_info: Annotated[dict, Depends(get_current_key
     links later without re-running generation.
     """
     job = db.get_job(job_id)
-    if job is None or job["user_id"] != key_info["user_id"]:
+    if job is None or job["user_id"] != wallet["wallet_address"]:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 

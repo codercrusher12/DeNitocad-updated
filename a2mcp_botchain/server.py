@@ -4,30 +4,45 @@ Agent-to-agent MCP server for BOT Chain callers - separate from a2mcp/
 Mounted at /mcp-bot on the same FastAPI app, not /mcp - different
 payment rails, shouldn't share a mount.
 
-Unlike a2mcp/'s X402Gate (HTTP-level 402 negotiation via OKX's SDK),
-there's no equivalent protocol on BOT Chain yet - AgentPay is still
-roadmap (see easycad's decision log). Payment here is simpler and more
-manual: the caller pays botchain_pay.PER_CALL_PRICE_BOT (or
-KEY_ISSUE_PRICE_BOT, N/A here - key issuance is HTTP-only, see
-web_app.py) to the treasury address BEFORE calling a tool, then passes
-the resulting tx_hash as a tool argument. Verified inside the tool
-handler via botchain_pay - there's no negotiation step to intercept.
+Identity and payment here now match web_app.py's HTTP API exactly -
+wallet sessions and prepaid credits, not per-call BOT payments. This
+used to be the one part of the project still on the old per-call-
+payment model (see the project's own migration notes: it was left
+alone through the wallet-auth/credits rollout because it had no
+API-key-equivalent identity to fall back on - the payment transaction
+itself WAS the identity proof). That gap is closed now: a wallet
+session is just as available to a headless agent as it is to a
+browser, since "sign a message" is strictly simpler than "send a
+transaction," and any caller here already holds a private key capable
+of the latter.
+
+What an agent does before calling either tool below, all plain HTTP
+JSON (no MCP tool needed for this part - these endpoints have no
+CORS/browser dependency, any HTTP client reaches them fine):
+  1. POST /auth/nonce {wallet_address} -> {nonce, message}
+  2. Sign `message` with the wallet's private key (eth_account's
+     Account.sign_message + encode_defunct, or equivalent) - free, no
+     gas, nothing on-chain.
+  3. POST /auth/verify {wallet_address, nonce, signature} -> {session_id}
+  4. POST /credits/purchase {tx_hash, tier} with
+     Authorization: Bearer <session_id> - same three tiers as the web
+     app (single/pack_1000/pack_10000), needs one real on-chain payment
+     just like before, but now it buys a balance instead of paying per
+     call.
+Then pass that session_id into generate_cad_part/export_format below.
+A session lasts WALLET_SESSION_TTL_SECONDS (7 days by default) - an
+agent making many calls doesn't need to re-sign for each one.
 
 Two tools:
-  - generate_cad_part: same "one real job this backend does" framing as
-    a2mcp/'s generate_cad_part, but priced in native BOT. Only STL is
-    produced (matches web_app.py's /generate - see cad_generator.py's
-    _build_workplane split). No expected_sender check on the payment
-    here - there's no prior identity for a first-time MCP caller to be
-    checked against; the paying wallet IS the identity, same reasoning
-    as key issuance in web_app.py.
+  - generate_cad_part: spends 1 credit from the session's wallet
+    balance (db.consume_credit) instead of requiring a fresh payment.
+    Only STL is produced (matches web_app.py's /generate - see
+    cad_generator.py's _build_workplane split).
   - export_format: pulls STEP/IGES/DXF/PDF for a job created by
-    generate_cad_part, priced per call, ownership checked by wallet
-    address (not an API key - MCP callers here never had one). Unlike
-    generate_cad_part, this DOES pass expected_sender once the caller
-    is known via the job's stored owner, closing the tx-hash-sniping
-    gap a ShieldGuard audit surfaced for any call that already has an
-    established identity to check against.
+    generate_cad_part - free, included in the credit already spent to
+    create the job. Ownership is checked by wallet address (the
+    session's, matched against the job's stored owner) - not billed
+    again, same reasoning as GET /export/{fmt}/{job_id} in web_app.py.
 """
 
 from __future__ import annotations
@@ -36,41 +51,50 @@ import asyncio
 
 from fastmcp import FastMCP
 
-import botchain_pay
 import db
+import wallet_auth
 from cad_generator import CADGenerator
 from config import settings
-from exceptions import NitocadError, PaymentError
+from exceptions import NitocadError
 
 mcp = FastMCP("nitocad-botchain")
 generator = CADGenerator()
 
 
 @mcp.tool
-async def generate_cad_part(description: str, tx_hash: str) -> dict:
-    """Generate a CAD part from a natural-language description, paid
-    per call in native BOT on BOT Chain. Caller must first send
-    botchain_pay.PER_CALL_PRICE_BOT BOT to the treasury address, then
-    pass the resulting transaction hash as tx_hash.
+async def generate_cad_part(description: str, session_id: str) -> dict:
+    """Generate a CAD part from a natural-language description.
+
+    Requires a wallet session (see this module's docstring for how to
+    get one - POST /auth/nonce then POST /auth/verify, both plain HTTP)
+    and spends 1 credit from that wallet's balance. If the balance is
+    0, buy more via POST /credits/purchase before calling this.
 
     Only STL is produced (drives a 3D preview) - call export_format
-    afterward, paying again, for STEP/IGES/DXF/PDF.
+    afterward for STEP/IGES/DXF/PDF, included at no extra cost.
     """
-    try:
-        caller = botchain_pay.verify_and_record_payment(
-            tx_hash,
-            purpose="generate",
-            min_amount_bot=botchain_pay.PER_CALL_PRICE_BOT,
-            user_id="pending",
-        )
-    except PaymentError as exc:
-        return {"success": False, "error": exc.message}
+    wallet = wallet_auth.resolve_session(session_id)
+    if wallet is None:
+        return {
+            "success": False,
+            "error": "Invalid or expired session_id. Sign in again via "
+            "POST /auth/nonce then POST /auth/verify - see this server's "
+            "module docstring for the full flow.",
+        }
+
+    if not db.consume_credit(wallet["wallet_address"]):
+        balance = db.get_credit_balance(wallet["wallet_address"])
+        return {
+            "success": False,
+            "error": f"Insufficient credits (balance: {balance}). Buy more via "
+            "POST /credits/purchase with this session_id as the bearer token.",
+        }
 
     try:
         result = await asyncio.to_thread(
             generator.generate_from_text,
             description,
-            user_id=caller,
+            user_id=wallet["wallet_address"],
             formats=["stl"],
         )
     except NitocadError as exc:
@@ -80,30 +104,25 @@ async def generate_cad_part(description: str, tx_hash: str) -> dict:
 
 
 @mcp.tool
-async def export_format(job_id: str, fmt: str, tx_hash: str) -> dict:
+async def export_format(job_id: str, fmt: str, session_id: str) -> dict:
     """Export a specific format (step/iges/dxf/pdf) for a job previously
-    created by generate_cad_part, paid per call in BOT. The paying
-    wallet must be the same one that created the job - a payment from a
-    different wallet is rejected even if it's otherwise valid, since it
-    would mean either wallet could pull files that belong to the other.
+    created by generate_cad_part. Free - already covered by the credit
+    spent when the job was generated. Requires the same wallet session
+    that created the job; a different wallet's session gets "Job not
+    found" rather than an ownership error, so a caller can't use this
+    to probe which job IDs exist for someone else's wallet.
     """
-    # Job lookup happens BEFORE payment verification here, on purpose -
-    # it's what lets expected_sender be enforced at all. A cheap db read,
-    # not gated on payment, is fine to do first.
-    job = db.get_job(job_id)
-    if job is None:
-        return {"success": False, "error": "Job not found."}
+    wallet = wallet_auth.resolve_session(session_id)
+    if wallet is None:
+        return {
+            "success": False,
+            "error": "Invalid or expired session_id. Sign in again via "
+            "POST /auth/nonce then POST /auth/verify.",
+        }
 
-    try:
-        caller = botchain_pay.verify_and_record_payment(
-            tx_hash,
-            purpose="generate",
-            min_amount_bot=botchain_pay.PER_CALL_PRICE_BOT,
-            user_id=job["user_id"],
-            expected_sender=job["user_id"],
-        )
-    except PaymentError as exc:
-        return {"success": False, "error": exc.message}
+    job = db.get_job(job_id)
+    if job is None or job["user_id"] != wallet["wallet_address"]:
+        return {"success": False, "error": "Job not found."}
 
     try:
         file_path, part_type = await asyncio.to_thread(

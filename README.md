@@ -78,7 +78,8 @@ highlights:
   a traceback into a response body.
 - **Fixed a path-traversal bug** in the `/download/{step,stl}/{filename}`
   routes (`file_safety.py`).
-- **Rate limiting** on `/generate` and `/api/keys/generate` (`slowapi`).
+- **Rate limiting** on `/generate`, `/auth/nonce`, `/auth/verify`, and
+  `/credits/purchase` (`slowapi`).
 - **`/healthz` + `/readyz`** endpoints for container/orchestrator health checks.
 - **A real test suite** (`tests/`) — unit tests for the parser/validator,
   API integration tests, and CadQuery-gated geometry tests covering the
@@ -98,6 +99,12 @@ untouched. Mirrors the architecture already proven in the Stitchfren
 project: plain `sqlite3` (not SQLAlchemy/Postgres - this project's scale
 doesn't need it, generation is a synchronous 1-3s call, not a queued job),
 hashed API keys, R2 object storage with local fallback.
+
+> **The API-key auth described in this section was later fully retired**
+> in favor of wallet sign-in + prepaid credits - see the "BOT Chain"
+> section below for the current system, and `db.py`/`wallet_auth.py`'s
+> module docstrings for why. Left as-is here as a historical record of
+> what was originally built and why, not as current documentation.
 
 New files:
 - **`db.py`** - sqlite3 persistence: `jobs` table (full audit history -
@@ -360,22 +367,51 @@ for `mcp_app_gated` — deliberately *not* falling back to the free/
 unpaid path, since that would silently serve OKX's paid listing for
 free, exactly what the original check exists to prevent.
 
-## `botchain_pay.py` / `a2mcp_botchain/` / `design_registry.py` — BOT Chain
+## `botchain_pay.py` / `wallet_auth.py` / `a2mcp_botchain/` / `design_registry.py` — BOT Chain
 
 A second, separate payment rail from the OKX listing above. BOT Chain has
 no live native payment protocol yet (AgentPay is still roadmap per BOT
 Chain's own materials), so this is a manual pay-to-treasury,
 prove-it-with-a-tx-hash flow, not an SDK integration like OKX's.
 
-**Two payment points**: a one-time `BOTCHAIN_KEY_ISSUE_PRICE_BOT` (5 BOT
-default) to mint an API key via `POST /api/keys/generate`, then
-`BOTCHAIN_PER_CALL_PRICE_BOT` (0.2 BOT default) on every `/generate`,
-`/export/{fmt}/{job_id}`, or `a2mcp_botchain` tool call.
+> **This section describes the current system.** It replaced an earlier
+> one (a 5 BOT one-time API key via `POST /api/keys/generate`, then
+> 0.2 BOT per `/generate`/`/export` call, identity = the API key) that
+> has been fully removed - no `security.py`, no `api_keys` table, no
+> conversion path for old keys. See `wallet_auth.py`'s module docstring
+> and `db.py`'s module docstring for what replaced it and why.
+
+**Identity: wallet sign-in, not API keys.** `wallet_auth.py` implements
+Sign-In-With-Wallet: `POST /auth/nonce` issues a one-time challenge
+message, the wallet signs it for free (`personal_sign` - no gas, nothing
+on-chain), `POST /auth/verify` checks the signature recovers to the
+claimed address and issues a session (`db.py`'s `sessions` table, an
+opaque token, revocable by deleting the row - not a JWT). Every
+authenticated request after that sends `Authorization: Bearer
+<session_id>`; `wallet_auth.get_current_wallet` resolves it back to a
+wallet address, the same role `security.py`'s `get_current_key` used to
+play for API keys.
+
+**Payment: prepaid credits, not per-call.** `POST /generate` spends
+exactly 1 credit from the signed-in wallet's balance (`db.consume_credit`
+- an atomic `UPDATE ... WHERE balance >= ?`, tested under real concurrent
+load in `tests/test_wallet_auth.py`) instead of demanding a fresh
+on-chain payment every time. `POST /credits/purchase` tops that balance
+up at one of three tiers - `single` (`BOTCHAIN_CREDIT_PRICE_BOT`, 1
+credit), `pack_1000` (`BOTCHAIN_PACK_1000_PRICE_BOT`, 1000 credits), or
+`pack_10000` (`BOTCHAIN_PACK_10000_PRICE_BOT`, 10000 credits) - verified
+the same way the old per-call payments were
+(`botchain_pay.verify_and_record_payment`, checking the tx is mined, sent
+to `TREASURY_ADDRESS`, for at least the tier's price, from the signed-in
+wallet itself). The two packs intentionally share the same per-credit
+rate; only `single` pays a premium for not committing to volume - see
+`config.py`'s own comment on these three numbers.
+
 `botchain_pay.verify_and_record_payment` checks the tx is mined, sent to
 `TREASURY_ADDRESS`, for at least the required amount — and, wherever an
-existing identity should own the payment (an API key's wallet, a job's
-wallet), that the tx's *sender* matches too (`expected_sender`). That
-last check exists because of a specific finding from auditing
+existing identity should own the payment (a wallet's own credits, a
+job's wallet), that the tx's *sender* matches too (`expected_sender`).
+That last check exists because of a specific finding from auditing
 ShieldGuard's own `connections.js`/`webhook.js`: without it, anyone
 watching the chain for a qualifying payment to the treasury could spend
 someone else's tx hash against their own call first. Double-spend/replay
@@ -383,7 +419,7 @@ protection is `db.py`'s `payments` table, `tx_hash` as `PRIMARY KEY` —
 `reserve_payment()` runs before any RPC work, so sqlite's own uniqueness
 constraint is the serialization guarantee, not an application lock.
 
-**Free tier**: `POST /preview` — no wallet, no API key, STL only, hard
+**Free tier**: `POST /preview` — no wallet, no session, STL only, hard
 per-IP rate limit (`RATE_LIMIT_PREVIEW`), and deliberately forces the
 fallback parser instead of DeepSeek (a free, unauthenticated route
 calling a paid external LLM API on every request would be a real cost-
@@ -393,21 +429,33 @@ description through the paid flow instead. This avoids the security
 question an upgradeable anonymous job would raise (anyone could try to
 claim any anonymous `job_id`).
 
-**On-demand export split**: `/generate` only builds and returns STL —
-STEP/IGES/DXF/PDF are deferred to `GET /export/{fmt}/{job_id}`
+**On-demand export split, and it's free**: `/generate` only builds and
+returns STL — STEP/IGES/DXF/PDF are deferred to `GET /export/{fmt}/{job_id}`
 (`cad_generator.export_format_for_job`), rebuilt from the job's stored
-`part_type`/`parameters` (same template + same params ⇒ same geometry),
-built and paid for individually. This is what makes the free preview
+`part_type`/`parameters` (same template + same params ⇒ same geometry) -
+but not billed again. The 1 credit spent at generation time covers every
+format pulled from that job; ownership (`job["user_id"] ==
+wallet["wallet_address"]`) is what gates the export, not a second
+payment. (This used to charge per format on top of the generation charge
+- fixed, not discounted - see that endpoint's own docstring in
+`web_app.py`.) This is what makes the free preview
 tier affordable at all — the expensive multi-format export work only
 happens when a format is actually wanted.
 
 **`a2mcp_botchain/server.py`**: a second real MCP server, mounted at
 `/mcp-bot` (not `/mcp` — different payment rail, deliberately not
-shared). Two tools: `generate_cad_part` (same pattern as key issuance —
-the paying wallet becomes the job's identity, no prior identity to check
-against) and `export_format` (looks up the job's owner *before*
-verifying payment, so `expected_sender` can be enforced — see the audit
-finding above).
+shared). Now uses the same wallet-session + credits model as the web
+app: `generate_cad_part(description, session_id)` spends 1 credit, and
+`export_format(job_id, fmt, session_id)` is free (included in the job's
+credit). A caller signs in the same way a browser does - `POST
+/auth/nonce` → sign the message with the wallet's private key (free, no
+gas) → `POST /auth/verify` → use the returned `session_id`. This closed
+the one gap that blocked migrating it earlier: it never had an
+API-key-equivalent identity to fall back on, since the payment
+transaction itself used to *be* the identity proof. A wallet session
+solves that without needing a payment at all - signing a message is
+strictly simpler than sending a transaction, and any caller here
+already holds a private key capable of the latter.
 
 **`contracts/DesignRegistry.sol`**: on-chain design provenance, fires
 once per job on STEP export only (not every format — `anchorDesign`
@@ -470,6 +518,21 @@ main FastAPI process retired the standalone gateway deploy):
 | FastAPI + CadQuery backend (now includes `/mcp` — see above) | Railway, **Docker** builder | CadQuery's OCP dependency needs system libs (`libgl1` etc.) and a pinned Python (3.9-3.12 only) that Railway's default Nixpacks builder has repeatedly failed to honor reliably (see `Dockerfile` comments, sourced from Railway's own help forum). A Dockerfile removes the guesswork. Not Vercel — OCP's wheel stack blows past Vercel's 250MB serverless function limit. |
 | `frontend/index.html` | Vercel / Netlify / GitHub Pages, static, no build step | It's one static file with a configurable API-endpoint box (localStorage), same pattern as Stitchfren's `frontend/`. |
 
+`frontend/` has grown into four static pages, all deployed together
+(same host, same build-free setup as `index.html` above) and cross-
+linked in each other's nav:
+- **`index.html`** — the marketing/landing page, pricing, and the main
+  paid demo (wallet connect, generate, export).
+- **`preview.html`** — the free, no-wallet preview tool on its own page,
+  for iterating on a description before committing to a paid
+  generation. Hands the description off to `index.html#demo` via
+  `localStorage` (client-side convenience only - free previews stay
+  anonymous and unclaimable server-side, same as always).
+- **`profile.html`** — job history and credit balance for the signed-in
+  wallet, reading `GET /api/jobs` and `GET /credits/balance`.
+- **`refine.html`** — the prompt-refinement chat, gated on
+  `BULK_TIER_CREDIT_THRESHOLD` (see `config.py`).
+
 `mcp-gateway/`'s `Dockerfile`/`railway.json` are still in the repo but
 should not be deployed as a live service going forward (see above).
 
@@ -482,7 +545,8 @@ served at the backend's own `/` (handy for quick same-origin testing —
 no endpoint config needed, works the moment `uvicorn` is running) and
 `frontend/index.html` (the one to actually deploy separately for the
 OKX listing). They're kept in sync manually; if you change one, change
-the other.
+the other. `preview.html`/`profile.html`/`refine.html` have no
+backend-embedded equivalent - they only exist as static pages.
 
 ## DeepSeek Integration (real LLM parsing, added after initial delivery)
 
@@ -589,21 +653,30 @@ version, not the old pinned one that caused the conflict.
 - One tool, `generate_cad_part`, priced per call via OKX's official Payment SDK for the OKX A2MCP marketplace
 - Session bootstrap and tool discovery stay free; only the actual generation call is gated
 
-### ✅ BOT Chain Payments, Free Preview & Provenance (`botchain_pay.py`, `a2mcp_botchain/`, `design_registry.py`)
+### ✅ BOT Chain Payments, Free Preview & Provenance (`botchain_pay.py`, `wallet_auth.py`, `a2mcp_botchain/`, `design_registry.py`)
 - Separate payment rail from the OKX listing above — native BOT, verified
   on-chain directly (no SDK, since BOT Chain has no live native payment
   protocol yet), not X Layer/OKX's Payment SDK
-- `POST /preview` — free, no wallet, no API key, STL-only, rate-limited
+- `POST /preview` — free, no wallet, no session, STL-only, rate-limited
   hard per IP, forces the fallback parser (not DeepSeek) so it can't be
   used to burn DeepSeek API budget for free
-- `POST /generate` — 5 BOT one-time to mint an API key
-  (`POST /api/keys/generate`), then `BOTCHAIN_PER_CALL_PRICE_BOT` (0.2 by
-  default) per call, STL only
-- `GET /export/{fmt}/{job_id}` — STEP/IGES/DXF/PDF, paid and built
-  individually, on demand
+- `POST /auth/nonce` + `POST /auth/verify` — free wallet sign-in
+  (Sign-In-With-Wallet), issues a session used as `Authorization: Bearer
+  <session_id>` on everything below - no API key, nothing on-chain, no
+  gas, just a signature
+- `POST /credits/purchase` — `single` (`BOTCHAIN_CREDIT_PRICE_BOT`, 1
+  credit), `pack_1000`, or `pack_10000`; tops up the signed-in wallet's
+  balance after verifying the matching on-chain payment
+- `POST /generate` — spends 1 credit from that balance (402 if
+  insufficient), STL only
+- `GET /export/{fmt}/{job_id}` — STEP/IGES/DXF/PDF, built individually
+  on demand but **not billed again** - included in the 1 credit already
+  spent at generation
 - `a2mcp_botchain/server.py` — a second MCP mount at `/mcp-bot`, separate
-  from OKX's `/mcp`, with `generate_cad_part` and `export_format` tools
-  gated the same way
+  from OKX's `/mcp`, with `generate_cad_part(description, session_id)`
+  (spends 1 credit) and `export_format(job_id, fmt, session_id)` (free) -
+  same wallet-session + credits model as above, see the "BOT Chain"
+  section for how an agent obtains a `session_id`
 - `contracts/DesignRegistry.sol` + `scripts/deploy_design_registry.py` +
   `design_registry.py` — on-chain design provenance, anchors a params
   hash + template version (not just a file hash) on STEP export, so a

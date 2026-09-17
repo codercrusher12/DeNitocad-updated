@@ -219,7 +219,7 @@
   .pricing{background:var(--ink);color:#fff;}
   .pricing .section-head h2{color:#fff;}
   .pricing .section-head p{color:rgba(255,255,255,.72);}
-  .price-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:stretch;}
+  .price-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;align-items:stretch;}
   .price-card{
     border-radius:20px;padding:34px 32px;
     background:#0E2C52;border:1px solid rgba(255,255,255,.1);
@@ -236,9 +236,9 @@
   .price-card.native .tag{color:var(--botchain-bright);}
   .price-card h3{color:#fff;font-size:1.3rem;margin-bottom:6px;}
   .price-card .amount{
-    display:flex;align-items:baseline;gap:8px;margin:14px 0 6px;
+    display:flex;align-items:baseline;gap:8px;margin:14px 0 6px;flex-wrap:wrap;
   }
-  .price-card .amount b{font-family:'Fraunces',serif;font-size:2.6rem;font-weight:500;color:#fff;}
+  .price-card .amount b{font-family:'Fraunces',serif;font-size:2.6rem;font-weight:500;color:#fff;white-space:nowrap;}
   .price-card .amount span{font-family:'IBM Plex Mono',monospace;font-size:.85rem;color:rgba(255,255,255,.6);}
   .price-card .sub{font-size:.85rem;color:rgba(255,255,255,.55);margin-bottom:22px;}
   .price-card ul{list-style:none;margin:0 0 26px;padding:0;display:grid;gap:10px;flex:1;}
@@ -414,6 +414,7 @@
     .panes{grid-template-columns:1fr;}
     .burger{display:flex;}
     nav.wrap > a.btn-primary{display:none;}
+    #walletNavBtn{display:none;}
   }
 </style>
 </head>
@@ -436,8 +437,12 @@
       <li><a href="#pricing">Pricing</a></li>
       <li><a href="#audience">Who it's for</a></li>
       <li><a href="#demo">Demo</a></li>
+      <li><a href="preview.html">Free Preview</a></li>
       <li><a href="#botchain">Agent Marketplace</a></li>
+      <li><a href="profile.html">My Projects</a></li>
+      <li><a href="refine.html">Prompt Refine</a></li>
     </ul>
+    <button id="walletNavBtn" class="btn btn-ghost" style="margin-right:8px;">Connect Wallet</button>
     <a href="#demo" class="btn btn-primary" style="margin-right:8px;">Try NitoCAD</a>
     <button class="burger" id="burger" aria-label="Open menu" aria-expanded="false" aria-controls="mobileMenu">
       <span></span><span></span><span></span>
@@ -448,7 +453,11 @@
     <a href="#pricing">Pricing</a>
     <a href="#audience">Who it's for</a>
     <a href="#demo">Demo</a>
+    <a href="preview.html">Free Preview</a>
     <a href="#botchain">Agent Marketplace</a>
+    <a href="profile.html">My Projects</a>
+    <a href="refine.html">Prompt Refine</a>
+    <button id="walletNavBtnMobile" class="btn btn-ghost">Connect Wallet</button>
     <a href="#demo" class="btn btn-primary">Try NitoCAD</a>
   </div>
 </header>
@@ -479,7 +488,7 @@
           Need a mounting bracket, shaft, gear, or custom enclosure? Don't spend hours in SolidWorks drafting from scratch or settling for broken 3D meshes. Describe your part in plain English—NitoCAD constructs precise, parametric B-rep solid geometry using CadQuery and OpenCASCADE, validates dimensions against physical engineering constraints, and exports machine-ready STEP files ready for manufacture.
         </p>
         <p class="mono" style="color:var(--ink-soft);font-size:.85rem;">
-          Free STL preview, no wallet required → STEP / IGES / DXF / PDF included with one 0.2 BOT generation → callable by AI agents directly over MCP on BOT Chain → on-chain design provenance.
+          Free STL preview, no wallet required → STEP / IGES / DXF / PDF included with one 0.05 BOT credit → callable by AI agents directly over MCP on BOT Chain → on-chain design provenance.
         </p>
         <div class="hero-ctas">
           <a href="#demo" class="btn btn-primary">Try Live Demo</a>
@@ -598,39 +607,52 @@
     <div class="wrap">
       <div class="section-head">
         <span class="eyebrow" style="color:var(--botchain-bright)">Pricing</span>
-        <h2>Pay per part. No subscription, no seat licenses.</h2>
-        <p>Every price below settles on-chain in native BOT the moment you use it - nothing to cancel, nothing that bills you while you're not generating anything.</p>
+        <h2>Buy credits. Spend one per part.</h2>
+        <p>No subscription, no API key, no seat licenses. Connect a wallet, sign in for free, buy credits in native BOT, and spend exactly 1 per generation - every export format for that part is included, at no extra charge.</p>
       </div>
       <div class="price-grid">
-        <div class="price-card native">
+        <div class="price-card">
           <span class="tag">Pay as you go</span>
-          <h3>Per Generation</h3>
-          <div class="amount"><b>0.2 BOT</b><span>/ part</span></div>
-          <p class="sub">One payment per part, made when you generate it - covers every export format for that part, however many you download.</p>
+          <h3>Single Credit</h3>
+          <div class="amount"><b>0.05 BOT</b><span>/ credit</span></div>
+          <p class="sub">≈ the cost of one part. No commitment, top up whenever you need one more.</p>
           <ul>
             <li>Free STL preview first, always - no wallet needed to try a design</li>
-            <li>0.2 BOT unlocks the part, not the file - STEP, IGES, DXF, and PDF all included, at no extra charge</li>
-            <li>No account, no API key - just a wallet and BOT Chain</li>
+            <li>1 credit = 1 generation, every export format included after</li>
+            <li>No account, no API key - just a wallet, connected with a free signature</li>
             <li>Same price whether you're a person on the site or an agent over MCP</li>
           </ul>
-          <a href="#demo" class="btn btn-primary">Try it, then generate for 0.2 BOT</a>
+          <a href="#demo" class="btn btn-ghost">Try it, then buy 1</a>
+        </div>
+        <div class="price-card native">
+          <span class="tag">Best rate</span>
+          <h3>1,000 Credits</h3>
+          <div class="amount"><b>5 BOT</b><span>= 0.005 BOT/credit</span></div>
+          <p class="sub">10x cheaper per credit than buying one at a time - for anyone generating regularly.</p>
+          <ul>
+            <li>1,000 generations, spend them whenever, no expiry</li>
+            <li>Same per-credit rate as the 10,000 pack below - pick the batch size, not a bigger discount for going bigger</li>
+            <li>Unlocks the <a href="refine.html" style="color:inherit;text-decoration:underline;">prompt-refinement chat</a> while your balance stays at 100+ credits</li>
+            <li>Full MCP endpoint access for autonomous agent-to-agent calls</li>
+          </ul>
+          <a href="#demo" class="btn btn-primary">Try it, then buy 1,000</a>
         </div>
         <div class="price-card">
-          <span class="tag">For developers &amp; agents</span>
-          <h3>API Access</h3>
-          <div class="amount"><b>5 BOT</b><span>one-time</span></div>
-          <p class="sub">Issues a service API key for programmatic access, then 0.2 BOT per part generated after that - same price and same all-formats-included model as the site.</p>
+          <span class="tag">For heavy use</span>
+          <h3>10,000 Credits</h3>
+          <div class="amount"><b>50 BOT</b><span>= 0.005 BOT/credit</span></div>
+          <p class="sub">Same rate as the 1,000 pack - buy once, stop thinking about topping up for a long while.</p>
           <ul>
-            <li>One-time 5 BOT key issuance, no recurring fee to hold the key</li>
-            <li>0.2 BOT per part generated after that - every export format for that part included</li>
+            <li>10,000 generations, spend them whenever, no expiry</li>
+            <li>Unlocks the prompt-refinement chat the whole time your balance stays at 100+</li>
             <li>Full MCP endpoint access for autonomous agent-to-agent calls</li>
             <li>Prefer USD instead of BOT? The same skill is listed on OKX's Agent Marketplace over x402 at $0.50/call</li>
           </ul>
-          <a href="#botchain" class="btn btn-ghost">Read the API docs</a>
+          <a href="#demo" class="btn btn-ghost">Try it, then buy 10,000</a>
         </div>
       </div>
       <div class="price-foot">
-        <span>Prices are set in <code class="mono">config.py</code> and shown live via <code class="mono">/config/chain</code> - the numbers above are never stale.</span>
+        <span>Prices are set in <code class="mono">config.py</code> - the demo below shows the live values via <code class="mono">/config/chain</code> before you ever pay, so what you're charged always matches what's posted there.</span>
         <a href="#demo">Get testnet BOT to try it free →</a>
       </div>
     </div>
@@ -675,6 +697,11 @@
             <span id="demoStatus" class="demo-status"></span>
           </div>
           <p id="demoCostNote" class="demo-dl-meta"></p>
+          <div class="demo-dl-links" style="margin-bottom:10px;">
+            <button class="btn btn-ghost" onclick="handleBuyCreditsClick('single')" title="1 credit">Buy 1 credit</button>
+            <button class="btn btn-ghost" onclick="handleBuyCreditsClick('pack_1000')" title="1000 credits">Buy 1000 credits</button>
+            <button class="btn btn-ghost" onclick="handleBuyCreditsClick('pack_10000')" title="10000 credits">Buy 10000 credits</button>
+          </div>
           <p class="demo-dl-meta">Free preview is STL only and not exportable later - it's a separate job. Happy with it? Use "Generate + Pay in BOT" with the same description for an exportable version.</p>
 
           <div id="demoResults" class="demo-results">
@@ -714,7 +741,7 @@
           <span class="tag">Main skill</span>
           <h3>Natural Language CAD Generation</h3>
           <p>Primary skill execution: transforms plain-text design prompts into validated, dimensionally accurate STEP solid models in a single API call.</p>
-          <p class="svc-price mono">0.2 BOT per call - see full <a href="#pricing" style="color:inherit;text-decoration:underline;">pricing</a></p>
+          <p class="svc-price mono">0.05 BOT per call - see full <a href="#pricing" style="color:inherit;text-decoration:underline;">pricing</a></p>
         </div>
         <div class="svc">
           <span class="tag">Templates</span>
@@ -734,12 +761,12 @@
         <div class="svc">
           <span class="tag">Export</span>
           <h3>Multi-Format CAD Exports, On Demand</h3>
-          <p>Engineered with OpenCASCADE's B-rep kernel to produce native STEP solid files, 2D DXF vector drawings, IGES models, engineering PDFs, and STL meshes. Each format is built and paid for only when requested, not bundled into every call.</p>
+          <p>Engineered with OpenCASCADE's B-rep kernel to produce native STEP solid files, 2D DXF vector drawings, IGES models, engineering PDFs, and STL meshes. Each format is built the moment you ask for it, included in the credit already spent generating the part - not billed again per format.</p>
         </div>
         <div class="svc">
           <span class="tag">Access</span>
           <h3>Agent-to-Agent MCP on BOT Chain</h3>
-          <p>An MCP endpoint other agents can call directly, gated by native-BOT payment verified on-chain, no separate account or SDK required beyond a wallet.</p>
+          <p>An MCP endpoint other agents can call directly - sign in with a free wallet signature (no gas, nothing on-chain), then spend prepaid credits per generation, the same mechanism as the site itself. No API key, no separate account, no SDK beyond a wallet.</p>
         </div>
       </div>
       <div class="svc-examples">
@@ -763,6 +790,9 @@
       <li><a href="#pricing">Pricing</a></li>
       <li><a href="#audience">Built for</a></li>
       <li><a href="#botchain">BOT Chain</a></li>
+      <li><a href="preview.html">Free Preview</a></li>
+      <li><a href="profile.html">My Projects</a></li>
+      <li><a href="refine.html">Prompt Refine</a></li>
     </ul>
   </div>
   <div class="wrap foot-note">Natural language to parametric CAD, built for high-reliability autonomous workflows and BOT Chain agent access.</div>
@@ -771,8 +801,8 @@
 <script type="importmap">
 {
     "imports": {
-        "three": "https://unpkg.com/three@0.180.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.180.0/examples/jsm/"
+        "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
     }
 }
 </script>
@@ -804,39 +834,52 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
   function getApiBase(){ return localStorage.getItem('nitocad_api_base') || DEFAULT_API_BASE; }
   function setApiBase(v){ localStorage.setItem('nitocad_api_base', v.replace(/\/$/, '')); }
 
-  let SERVICE_API_KEY = null;
   let chainConfig = null;
 
-  // Whether THIS browser already holds a cached API key for the current
-  // API base - the only thing that determines whether clicking "Generate
-  // + Pay in BOT" is about to trigger one payment or two. Read fresh
-  // each time rather than trusting the SERVICE_API_KEY variable, since
-  // that's only populated after ensureServiceKey() actually runs once -
-  // this needs to be accurate before that, for the cost note on load.
-  function hasServiceKey(base){
-    return !!localStorage.getItem('nitocad_service_key_' + base);
+  // Replaces the old hasServiceKey/SERVICE_API_KEY model entirely - see
+  // the wallet sign-in block above (getWalletSession) for identity, and
+  // db.py's wallet_credits table for what "credits" means server-side.
+  // Balance is fetched fresh each time rather than cached client-side,
+  // since it changes server-side (purchases, spends) without this page
+  // necessarily being the one that changed it.
+  async function fetchCreditsBalance(base){
+    const session = getWalletSession(base);
+    if(!session) return null;
+    const resp = await fetch(base + '/credits/balance', {
+      headers: { 'Authorization': 'Bearer ' + session.session_id },
+    });
+    if(!resp.ok) return null;
+    const data = await resp.json();
+    return data.balance;
   }
 
-  // Keeps the visible price note honest at every point: shown before
-  // any payment (so the wallet prompt is never a surprise), and updated
-  // the instant a key gets issued so the "first generation" framing
-  // doesn't linger after it no longer applies.
+  // Keeps the visible cost note honest at every point: shown before
+  // generating (so there's never a surprise), reflects whichever state
+  // actually applies right now - not signed in, signed in with credits,
+  // or signed in with none.
   async function updateCostNote(){
     const base = getApiBase();
     if(!base){ costNoteEl.textContent = ''; return; }
     try{
       const cfg = await getChainConfig(base);
-      const perCall = cfg.per_call_price_bot;
-      if(hasServiceKey(base)){
-        costNoteEl.textContent = `This generation costs ${perCall} BOT, paid from your wallet when you click Generate.`;
+      const session = getWalletSession(base);
+      if(!session){
+        costNoteEl.textContent = `Connect your wallet to generate. Each generation spends 1 credit (${cfg.credit_price_bot} BOT to buy one, or ${cfg.pack_1000_price_bot} BOT for ${cfg.pack_1000_credits}, ${cfg.pack_10000_price_bot} BOT for ${cfg.pack_10000_credits}).`;
+        return;
+      }
+      const balance = await fetchCreditsBalance(base);
+      if(balance === null){
+        costNoteEl.textContent = '';
+        return;
+      }
+      if(balance > 0){
+        costNoteEl.textContent = `You have ${balance} credit${balance === 1 ? '' : 's'}. Generating spends 1 - exports of that job are free after.`;
       } else {
-        const keyPrice = cfg.key_issue_price_bot;
-        const total = (Number(keyPrice) + Number(perCall));
-        costNoteEl.textContent = `First generation on this browser: ${keyPrice} BOT one-time (issues your API key) + ${perCall} BOT for this generation = ${total} BOT total, as two separate wallet approvals. Every generation after that is just ${perCall} BOT.`;
+        costNoteEl.textContent = `You have 0 credits. Buy 1 for ${cfg.credit_price_bot} BOT, or a pack (${cfg.pack_1000_price_bot} BOT for ${cfg.pack_1000_credits}, ${cfg.pack_10000_price_bot} BOT for ${cfg.pack_10000_credits}) below.`;
       }
     } catch(err){
-      // Chain config not reachable yet (e.g. API still warming up) -
-      // fail quiet here, the button's own error handling covers it.
+      // Chain config or credits endpoint not reachable yet - fail quiet
+      // here, the button's own error handling covers it.
       costNoteEl.textContent = '';
     }
   }
@@ -879,6 +922,118 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     return account;
   }
 
+  // ------------------------------------------------------- wallet sign-in ----
+  // Sign-In-With-Wallet: connect + sign a free message (no gas, nothing
+  // on-chain) to get a session, replacing the old "pay 5 BOT for an API
+  // key cached in this browser" identity model. Session is cached in
+  // localStorage purely as a convenience (skip re-signing on reload) -
+  // losing it just means signing in again, which costs nothing and
+  // works from any device, unlike the old key. See wallet_auth.py.
+  const WALLET_SESSION_KEY_PREFIX = 'nitocad_wallet_session_';
+
+  function getWalletSession(base){
+    const raw = localStorage.getItem(WALLET_SESSION_KEY_PREFIX + base);
+    if(!raw) return null;
+    try {
+      const session = JSON.parse(raw);
+      if(new Date(session.expires_at) <= new Date()){
+        localStorage.removeItem(WALLET_SESSION_KEY_PREFIX + base);
+        return null;
+      }
+      return session;
+    } catch(err){
+      return null;
+    }
+  }
+
+  function setWalletSession(base, session){
+    localStorage.setItem(WALLET_SESSION_KEY_PREFIX + base, JSON.stringify(session));
+  }
+
+  function clearWalletSession(base){
+    localStorage.removeItem(WALLET_SESSION_KEY_PREFIX + base);
+  }
+
+  function shortAddress(addr){
+    return addr.slice(0, 6) + '…' + addr.slice(-4);
+  }
+
+  function updateWalletUI(){
+    const base = getApiBase();
+    const session = base ? getWalletSession(base) : null;
+    const label = session ? shortAddress(session.wallet_address) : 'Connect Wallet';
+    [document.getElementById('walletNavBtn'), document.getElementById('walletNavBtnMobile')]
+      .forEach(btn => { if(btn) btn.textContent = label; });
+  }
+
+  async function signInWithWallet(base){
+    const account = await connectWallet(base);
+    const nonceResp = await fetch(base + '/auth/nonce', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wallet_address: account }),
+    });
+    const nonceData = await nonceResp.json();
+    if(!nonceResp.ok) throw new Error(nonceData.detail || 'Could not start sign-in.');
+
+    const signature = await window.ethereum.request({
+      method: 'personal_sign',
+      params: [nonceData.message, account],
+    });
+
+    const verifyResp = await fetch(base + '/auth/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wallet_address: account, nonce: nonceData.nonce, signature }),
+    });
+    const session = await verifyResp.json();
+    if(!verifyResp.ok) throw new Error(session.detail || 'Sign-in failed.');
+
+    setWalletSession(base, session);
+    updateWalletUI();
+    updateCostNote();
+    return session;
+  }
+
+  async function signOutOfWallet(base){
+    const session = getWalletSession(base);
+    clearWalletSession(base);
+    updateWalletUI();
+    if(session){
+      // Best-effort - the session is already gone client-side either
+      // way, this just also deletes the row server-side so the same
+      // session_id can't be replayed if it somehow leaked.
+      try {
+        await fetch(base + '/auth/logout', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + session.session_id },
+        });
+      } catch(err){ /* already signed out client-side regardless */ }
+    }
+    updateCostNote();
+  }
+
+  async function handleWalletButtonClick(){
+    const base = getApiBase();
+    if(!base) return;
+    const existing = getWalletSession(base);
+    if(existing){
+      if(window.confirm(`Connected as ${existing.wallet_address}. Disconnect?`)){
+        await signOutOfWallet(base);
+      }
+      return;
+    }
+    try {
+      await signInWithWallet(base);
+    } catch(err){
+      alert('Wallet sign-in failed: ' + err.message);
+    }
+  }
+
+  document.getElementById('walletNavBtn').addEventListener('click', handleWalletButtonClick);
+  document.getElementById('walletNavBtnMobile').addEventListener('click', handleWalletButtonClick);
+  updateWalletUI();
+
   async function payBot(base, amountBot){
     const cfg = await getChainConfig(base);
     const account = await connectWallet(base);
@@ -893,55 +1048,59 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     return txHash;
   }
 
-  async function ensureServiceKey(base){
-    const cached = localStorage.getItem('nitocad_service_key_' + base);
-    if(cached){ SERVICE_API_KEY = cached; return; }
-    const cfg = await getChainConfig(base);
-    statusEl.textContent = `Waiting for payment (1 of 2): ${cfg.key_issue_price_bot} BOT one-time API key…`;
-    const txHash = await payBot(base, cfg.key_issue_price_bot);
-    const resp = await fetch(base + '/api/keys/generate', {
+  // Buys credits at one of the three tiers - pays on-chain, then
+  // registers that payment against the signed-in wallet's balance.
+  // Same underlying call for all three; only the tier and price differ.
+  async function buyCredits(base, tier, priceBot){
+    const session = getWalletSession(base);
+    if(!session) throw new Error('Connect your wallet first.');
+    statusEl.textContent = `Waiting for payment: ${priceBot} BOT for credits…`;
+    const txHash = await payBot(base, priceBot);
+    statusEl.textContent = 'Confirming purchase…';
+    const resp = await fetch(base + '/credits/purchase', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tx_hash: txHash }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + session.session_id,
+      },
+      body: JSON.stringify({ tx_hash: txHash, tier }),
     });
     const data = await resp.json();
-    if (!resp.ok) throw new Error(data.detail || 'Key issuance failed.');
-    SERVICE_API_KEY = data.api_key;
-    localStorage.setItem('nitocad_service_key_' + base, SERVICE_API_KEY);
+    if(!resp.ok) throw new Error(data.detail || 'Credit purchase failed.');
     updateCostNote();
+    return data.balance;
   }
 
-  // Fires once, right before the FIRST payment of a "Generate + Pay in
-  // BOT" click - the one moment this page is about to ask for a wallet
-  // approval the person may not expect (the one-time key fee, bundled
-  // in with the per-generation fee, as two separate approvals). A
-  // passive price note above the button is easy to miss; a modal the
-  // person has to explicitly accept before their wallet opens is not.
-  // Returning users who already hold a key never see this - there's
-  // nothing surprising left to confirm for them.
-  function confirmFirstChargeIfNeeded(base, cfg){
-    if(hasServiceKey(base)) return true;
-    const total = (Number(cfg.key_issue_price_bot) + Number(cfg.per_call_price_bot));
-    return window.confirm(
-      `This is your first generation on this browser.\n\n` +
-      `You'll be asked to approve two payments from your wallet:\n` +
-      `  1. ${cfg.key_issue_price_bot} BOT - one-time API key (only ever charged once)\n` +
-      `  2. ${cfg.per_call_price_bot} BOT - this generation\n\n` +
-      `Total: ${total} BOT. Every generation after this one is just ${cfg.per_call_price_bot} BOT.\n\n` +
-      `Continue?`
-    );
+  async function handleBuyCreditsClick(tier){
+    const base = getApiBase();
+    if(!base) return;
+    try {
+      if(!getWalletSession(base)) await signInWithWallet(base);
+      const cfg = await getChainConfig(base);
+      const priceBot = tier === 'single' ? cfg.credit_price_bot
+        : tier === 'pack_1000' ? cfg.pack_1000_price_bot
+        : cfg.pack_10000_price_bot;
+      const balance = await buyCredits(base, tier, priceBot);
+      statusEl.textContent = `Purchase complete - balance: ${balance} credits.`;
+    } catch(err){
+      statusEl.classList.add('err');
+      statusEl.textContent = err.message || 'Purchase failed.';
+    }
   }
+  window.handleBuyCreditsClick = handleBuyCreditsClick;
 
   async function downloadFormat(base, fmt, jobId, btn){
     // No payment here - the job's original /generate payment already
     // covers every export format pulled from it. See
     // /export/{fmt}/{job_id}'s docstring in web_app.py.
+    const session = getWalletSession(base);
+    if(!session){ alert('Your wallet session expired - reconnect and regenerate to download.'); return; }
     const originalText = btn.textContent;
     btn.disabled = true;
     btn.textContent = 'Building...';
     try {
       const resp = await fetch(`${base}/export/${fmt}/${jobId}`, {
-        headers: { 'X-API-Key': SERVICE_API_KEY },
+        headers: { 'Authorization': 'Bearer ' + session.session_id },
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -977,10 +1136,10 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     const v = apiBaseInput.value.trim();
     if(!v) return;
     setApiBase(v);
-    SERVICE_API_KEY = null;
     chainConfig = null;
     refreshStatus();
     updateCostNote();
+    updateWalletUI();
   });
 
   document.querySelectorAll('.demo-examples button').forEach(btn => {
@@ -1093,11 +1252,11 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     // STL already exists (it built the preview) and is served
     // unauthenticated, so it's a direct link. Every other format is
     // built on demand when its button is clicked - included in the
-    // one payment already made at generation time, not billed again.
+    // one credit already spent at generation time, not billed again.
     //
     // isPreview MUST gate the paid buttons off entirely, not just
     // disable them - a /preview job's user_id is "anonymous", which
-    // never matches any real API key's owner, so /export's ownership
+    // never matches any real wallet's address, so /export's ownership
     // check would 404 it regardless. Showing the buttons anyway would
     // just be a guaranteed-to-fail click, not a pricing risk (exports
     // aren't separately charged either way) - still hidden because a
@@ -1140,7 +1299,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     statusEl.textContent = 'Generating free preview…';
 
     try{
-      // No wallet, no API key, no payment - see POST /preview.
+      // No wallet, no session, no payment - see POST /preview.
       const res = await fetch(base + '/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1179,58 +1338,59 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
       statusEl.textContent = 'Could not reach pricing info - check back shortly.';
       return;
     }
-    if(!confirmFirstChargeIfNeeded(base, cfg)) return;
 
     submitBtn.disabled = true;
     resultsEl.classList.remove('active');
-    statusEl.textContent = 'Generating…';
 
     try{
-      if(!SERVICE_API_KEY) await ensureServiceKey(base);
+      // Step 1: identity. No API key anymore - a wallet session,
+      // signed for free, is the only thing /generate needs to know
+      // who's asking. See wallet_auth.py.
+      let session = getWalletSession(base);
+      if(!session){
+        statusEl.textContent = 'Connecting wallet…';
+        session = await signInWithWallet(base);
+      }
 
-      statusEl.textContent = `Waiting for payment: ${cfg.per_call_price_bot} BOT for this generation…`;
-      let txHash = await payBot(base, cfg.per_call_price_bot);
-      statusEl.textContent = 'Generating…';
-
-      const requestBody = { description: description, tx_hash: txHash };
-
-      let res = await fetch(base + '/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': SERVICE_API_KEY },
-        body: JSON.stringify(requestBody)
-      });
-
-      if(res.status === 401){
-        // The cached API key is invalid (e.g. a server-side db reset) -
-        // this is the one case where a 401 costs another real payment:
-        // a fresh key costs another key-issue payment, and the tx_hash
-        // above was tied to the now-invalid key's wallet check, so it
-        // has to be re-paid too, not reused. Rare, but not free - and
-        // since this happens mid-flow rather than on a fresh click,
-        // it gets its own explicit confirmation too rather than
-        // silently re-charging the key fee.
-        const reissue = window.confirm(
-          `Your saved API key is no longer valid on this server (it may have been reset).\n\n` +
-          `Getting a new one costs another ${cfg.key_issue_price_bot} BOT one-time fee, ` +
-          `plus the ${cfg.per_call_price_bot} BOT for this generation again.\n\n` +
-          `Continue and pay again?`
+      // Step 2: credits. /generate spends exactly 1 - if the balance
+      // is 0, this is the one moment a payment might be needed, and
+      // it's disclosed and confirmed before the wallet opens, not
+      // bundled silently into the generate click.
+      statusEl.textContent = 'Checking credits…';
+      let balance = await fetchCreditsBalance(base);
+      if(balance === 0){
+        const buy = window.confirm(
+          `You have 0 credits. Buy 1 for ${cfg.credit_price_bot} BOT to generate this part?\n\n` +
+          `(For repeated use, ${cfg.pack_1000_price_bot} BOT gets you ${cfg.pack_1000_credits} credits, ` +
+          `${cfg.pack_10000_price_bot} BOT gets you ${cfg.pack_10000_credits} - see the credit buttons below.)`
         );
-        if(!reissue){
-          statusEl.textContent = 'Cancelled - no further payment made.';
+        if(!buy){
+          statusEl.textContent = 'Cancelled - no payment made.';
           submitBtn.disabled = false;
           return;
         }
-        localStorage.removeItem('nitocad_service_key_' + base);
-        SERVICE_API_KEY = null;
-        await ensureServiceKey(base);
-        statusEl.textContent = `Waiting for payment: ${cfg.per_call_price_bot} BOT for this generation…`;
-        txHash = await payBot(base, cfg.per_call_price_bot);
-        statusEl.textContent = 'Generating…';
-        res = await fetch(base + '/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-API-Key': SERVICE_API_KEY },
-          body: JSON.stringify({ description: description, tx_hash: txHash })
-        });
+        statusEl.textContent = `Waiting for payment: ${cfg.credit_price_bot} BOT for 1 credit…`;
+        balance = await buyCredits(base, 'single', cfg.credit_price_bot);
+      }
+
+      // Step 3: generate. No tx_hash, no per-call wallet prompt here -
+      // the credit spend is server-side and atomic (db.consume_credit).
+      statusEl.textContent = 'Generating…';
+      const res = await fetch(base + '/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + session.session_id,
+        },
+        body: JSON.stringify({ description: description }),
+      });
+
+      if(res.status === 401){
+        // Session expired or was revoked server-side - free to fix,
+        // just sign in again, no payment involved either way.
+        clearWalletSession(base);
+        updateWalletUI();
+        throw new Error('Your wallet session expired - click Generate again to reconnect.');
       }
 
       const data = await res.json();

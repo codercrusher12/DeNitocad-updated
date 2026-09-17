@@ -1,17 +1,20 @@
 """
-BOT Chain payment verification for the agent-to-agent interaction point.
+BOT Chain payment verification.
 
 BOT Chain has no live native payment protocol yet (AgentPay is still on
-BOT Chain's own roadmap, not shipped - see easycad's own decision log).
-This module is a manual substitute: a caller pays by sending native BOT
-directly to settings.TREASURY_ADDRESS, then passes the resulting tx hash
-to this backend, which verifies the payment on-chain before serving the
-gated action.
+BOT Chain's own roadmap, not shipped). This module is a manual
+substitute: a caller pays by sending native BOT directly to
+settings.TREASURY_ADDRESS, then passes the resulting tx hash to this
+backend, which verifies the payment on-chain before crediting the
+signed-in wallet.
 
-Two payment points (see web_app.py / a2mcp_botchain/server.py):
-  - one-time settings.BOTCHAIN_KEY_ISSUE_PRICE_BOT to mint an API key
-  - settings.BOTCHAIN_PER_CALL_PRICE_BOT on every /generate,
-    /export/{fmt}/{job_id}, or MCP generate_cad_part/export_format call
+The only thing this module verifies payments FOR now is
+POST /credits/purchase (see web_app.py and config.py's three tiers:
+single/pack_1000/pack_10000). /generate, /export/{fmt}/{job_id}, and
+a2mcp_botchain/server.py's MCP tools no longer take a payment directly -
+they spend prepaid credits (db.consume_credit) instead. See db.py and
+wallet_auth.py's module docstrings for the full wallet-session +
+credits model this replaced the old per-call-payment one with.
 
 Confirmation threshold is settings.BOTCHAIN_CONFIRMATION_BLOCKS (1 by
 default) - accepted as soon as the tx is mined, not re-checked after
@@ -34,11 +37,10 @@ qualifying payment to the treasury could grab someone else's tx_hash
 and spend it against their own call first. ShieldGuard's connections.js
 and webhook.js both check the payment's sender against an expected
 wallet for exactly this reason (see their own comments on the bug this
-fixed). Callers here that already know which wallet should be paying
-(an existing API key's owner, or a job's owner) must pass
-expected_sender; key issuance and MCP's generate_cad_part are the two
-exceptions, since there's no prior identity to check against - the
-paying wallet becomes the identity, not the other way around.
+fixed). POST /credits/purchase always passes expected_sender=the
+signed-in wallet, since a wallet session already establishes identity
+before the payment check ever runs - there's no "no prior identity"
+exception left the way key issuance used to be one.
 """
 
 from __future__ import annotations
@@ -55,8 +57,13 @@ from logging_config import get_logger
 
 logger = get_logger(__name__)
 
-KEY_ISSUE_PRICE_BOT = Decimal(str(settings.BOTCHAIN_KEY_ISSUE_PRICE_BOT))
-PER_CALL_PRICE_BOT = Decimal(str(settings.BOTCHAIN_PER_CALL_PRICE_BOT))
+# Credits pricing (see config.py's own comment on these three) - kept
+# as Decimal for the same reason as the two above: verify_and_record_
+# payment compares against wei amounts, and float/Decimal mixing there
+# is exactly the kind of rounding bug this module's tests guard against.
+CREDIT_PRICE_BOT = Decimal(str(settings.BOTCHAIN_CREDIT_PRICE_BOT))
+PACK_1000_PRICE_BOT = Decimal(str(settings.BOTCHAIN_PACK_1000_PRICE_BOT))
+PACK_10000_PRICE_BOT = Decimal(str(settings.BOTCHAIN_PACK_10000_PRICE_BOT))
 
 
 def _w3() -> Web3:

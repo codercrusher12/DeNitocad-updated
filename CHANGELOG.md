@@ -3,6 +3,151 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.1.0] — MCP agents migrated to wallet sessions, standalone free preview page, CDN fix
+
+### Changed
+- **`a2mcp_botchain/server.py`** — `generate_cad_part` and `export_format`
+  now take a `session_id` instead of a per-call `tx_hash`, matching the
+  web app's wallet-session + credits model from 3.0.0. This closes the
+  gap that blocked migrating it earlier: it never had an
+  API-key-equivalent identity to fall back on, since the payment
+  transaction itself used to *be* the identity proof. A wallet session
+  solves that without needing a payment at all - signing a message
+  (`POST /auth/nonce` → sign → `POST /auth/verify`, all plain HTTP, no
+  browser needed) is strictly simpler than sending a transaction, and
+  any agent calling these tools already holds a private key capable of
+  the latter. `generate_cad_part` spends 1 credit; `export_format` is
+  free, same reasoning as `GET /export/{fmt}/{job_id}`.
+- **`wallet_auth.py`** — session lookup factored out into
+  `resolve_session()`, a plain function with no FastAPI dependency
+  machinery. `get_current_wallet` (HTTP routes) now wraps it; the MCP
+  tools above call it directly, since MCP tool functions take explicit
+  arguments, not dependency injection.
+
+### Added
+- **`frontend/preview.html`** — a standalone, no-wallet-required version
+  of the free preview: a bigger space to iterate on a description, see
+  the free STL update, and tweak it as many times as wanted, separate
+  from the paid demo section's conversion-focused layout. Saves the
+  description to `localStorage` on each successful preview so
+  `index.html#demo`'s form can offer to pick up where this page left
+  off, without duplicating any server-side state (free previews stay
+  anonymous and unclaimable, unchanged from 2.x).
+- `tests/test_a2mcp_botchain.py` — covers the migrated MCP tools:
+  invalid/expired session handling, insufficient-credits failures (and
+  that they don't themselves consume anything), ownership privacy (a
+  wallet that doesn't own a job gets the same "not found" a nonexistent
+  job would, not a distinguishable error), and - CadQuery permitting -
+  that generation spends exactly 1 credit and export doesn't spend a
+  second one.
+
+### Fixed
+- **Three.js loaded from unpkg is CORS-unreliable for ES module
+  imports** - a real, externally documented problem (multiple long-
+  standing GitHub issues against unpkg, including one for this exact
+  package), not something introduced by this release, but surfaced
+  while building `preview.html` against the same pattern
+  `frontend/index.html` already used. `<script type="module">` imports
+  are fetched in CORS mode by the browser itself (unlike a classic
+  `<script src="...">` tag, which isn't subject to CORS at all) - when
+  the CDN doesn't consistently send `Access-Control-Allow-Origin`, the
+  whole module fails to instantiate, silently, with no exception the
+  page's own error handling can catch. Both `index.html` and
+  `preview.html` now load `three` from `cdn.jsdelivr.net/npm/` instead,
+  which does reliably send that header. **Not independently verified
+  end-to-end against either CDN in this project's own test environment**
+  - its outbound network access is blocked entirely, uniformly, for any
+  external domain, which made it impossible to distinguish "unpkg
+  specifically fails here" from "nothing external loads here." The
+  business logic around the CDN load (the `/preview` call, response
+  handling, parameter/warning rendering, the `localStorage` handoff) was
+  verified directly, with the CDN import stubbed out - see this
+  release's test notes. Worth a real-browser smoke test of both pages
+  after deploying.
+
+## [3.0.0] — Wallet sign-in + prepaid credits replace API keys
+
+Breaking change to the auth and payment model, not an additive feature.
+Anyone integrating against the old `X-API-Key`/per-call-payment flow
+needs to migrate - there is no compatibility shim and no conversion
+path for existing keys, per the project's own "going forward only"
+decision.
+
+### Added
+- **`wallet_auth.py`** — Sign-In-With-Wallet: `POST /auth/nonce` issues
+  a one-time challenge, the wallet signs it for free (no gas, nothing
+  on-chain), `POST /auth/verify` checks the signature and issues a
+  session. Sessions are opaque server-side tokens (revocable via
+  `POST /auth/logout`), not JWTs.
+- **`db.py`** — `nonces` and `sessions` tables backing the above, plus
+  `wallet_credits`: a prepaid-generation balance per wallet.
+  `consume_credit` is a single atomic `UPDATE ... WHERE balance >= ?` -
+  tested under 20 real concurrent threads against a wallet holding
+  exactly 1 credit in `tests/test_wallet_auth.py`, confirming exactly
+  one winner and zero overdraft.
+- **`POST /credits/purchase`** — three tiers: `single`
+  (`BOTCHAIN_CREDIT_PRICE_BOT`, 1 credit), `pack_1000`, `pack_10000`.
+  The two packs share the same per-credit rate; `single` pays a 10x
+  premium for not committing to volume - see `config.py`'s comment on
+  these three numbers.
+- **`GET /credits/balance`** — current balance for the signed-in wallet.
+- `tests/test_wallet_auth.py` — unit tests for nonce/session/credit
+  storage, including the concurrency test above.
+
+### Changed
+- **`POST /generate`** now authenticates via
+  `Authorization: Bearer <session_id>` (wallet session) instead of
+  `X-API-Key`, and spends 1 credit (`db.consume_credit`) instead of
+  requiring a fresh on-chain payment on every call.
+- **`GET /export/{fmt}/{job_id}`** likewise moved to wallet-session
+  auth. Still free per job (unchanged from 2.x) - this fixes nothing
+  about pricing, only identity.
+- **`GET /api/jobs`, `GET /api/jobs/{job_id}`** moved to wallet-session
+  auth - same audit-history behavior, different identity mechanism.
+- **`frontend/index.html`** and **`web_app.py`**'s embedded demo both
+  rewritten: a persistent "Connect Wallet" control replaces the old
+  implicit "pay 5 BOT the first time you click Generate" flow, with
+  visible "Buy 1 / 1000 / 10000 credits" actions and a live balance/
+  cost note shown before anything is charged.
+- **`tests/conftest.py`** — `api_key` fixture replaced by
+  `wallet_session` (signs a real throwaway wallet in through the actual
+  HTTP endpoints) and `wallet_with_credits` (the same, pre-loaded with
+  1000 credits for tests that need to call `/generate`).
+- **`tests/test_api.py`** — rewritten against the new auth model, plus
+  new coverage: a 402 on zero credits, a regression test pinning down
+  that a rejected (422) request never spends a credit, and a regression
+  test for the exact bug this release also fixes (see below).
+
+### Fixed
+- Exports were briefly double-billed after the 2.x per-call pricing
+  model shipped - `GET /export/{fmt}/{job_id}` was charging its own
+  `BOTCHAIN_PER_CALL_PRICE_BOT` on top of the payment already made at
+  `/generate` time, for the same job. Fixed by removing the second
+  charge entirely (ownership already proves the caller paid once at
+  generation) rather than discounting it - the fix carried forward
+  into this release's credit-based model too:
+  `test_export_does_not_consume_an_additional_credit` guards it going
+  forward.
+
+### Removed
+- **`security.py`** — deleted. `X-API-Key` header auth is gone.
+- **`db.py`**'s `api_keys` table (no longer created on a fresh deploy;
+  not dropped from any already-deployed sqlite file, since that's
+  destructive and unnecessary for "stop reading it") and the
+  `create_api_key`/`validate_api_key` functions.
+- **`POST /api/keys/generate`** endpoint, and the `ApiKeyResponse`/
+  `KeyGenerateRequest` models.
+- `RATE_LIMIT_KEY_ISSUE` config setting (rate-limited the now-removed
+  endpoint above).
+
+### Not migrated (deliberately, see the project's own notes)
+- **`a2mcp_botchain/server.py`**'s `generate_cad_part`/`export_format`
+  MCP tools still use the old per-call BOT payment model. They have no
+  API-key-equivalent identity to fall back on (a payment transaction
+  *is* the identity proof there), so migrating them needs its own
+  design rather than copying the web app's change - tracked as
+  follow-up work, not an oversight.
+
 ## [2.3.0] — Multi-view orthographic + multi-part DXF/PDF export
 
 `export_dxf`/`export_pdf` previously derived their entire drawing from

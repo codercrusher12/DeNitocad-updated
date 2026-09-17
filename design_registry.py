@@ -8,9 +8,9 @@ part_type+parameters+templateVersion again, and anchorDesign() reverts
 on a duplicate jobId anyway (one anchor per job, not per export click).
 
 Anchoring failure is NEVER allowed to break a paid export - the user
-already paid PER_CALL_PRICE_BOT and is owed their file regardless of
-whether the chain call succeeds. Every failure path here is caught and
-logged, not raised.
+already spent a credit generating this job and is owed their file
+regardless of whether the chain call succeeds. Every failure path here
+is caught and logged, not raised.
 
 Uses settings.ANCHOR_WALLET_PRIVATE_KEY - a wallet the SERVER controls
 and signs with, separate from any user's wallet and separate from

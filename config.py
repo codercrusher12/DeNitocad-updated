@@ -55,7 +55,11 @@ class Settings(BaseSettings):
 
     # --- Rate limiting (slowapi / limits syntax, e.g. "20/minute") ---
     RATE_LIMIT_GENERATE: str = "20/minute"
-    RATE_LIMIT_KEY_ISSUE: str = "5/hour"
+    # RATE_LIMIT_KEY_ISSUE removed - it rate-limited the old
+    # POST /api/keys/generate endpoint, retired along with the whole
+    # API-key system (see web_app.py's note where that endpoint used
+    # to live, and wallet_auth.py). POST /auth/nonce and /auth/verify
+    # use their own inline "20/minute" limit instead.
 
     # --- DeepSeek parser ------------------------------------------------
     # Railway's actual service variables are named LLM_API_KEY/LLM_BASE_URL/
@@ -74,6 +78,28 @@ class Settings(BaseSettings):
     LLM_API_KEY: str | None = None
     LLM_BASE_URL: str | None = None
     LLM_MODEL: str | None = None
+
+    # --- Prompt-refinement chat (prompt_refine.py) -------------------------
+    # A perk for wallets currently sitting on a bulk-pack-sized credit
+    # balance, not a separate purchase: a chat that helps refine wording
+    # before spending a credit on the real generation, DeepSeek-only,
+    # never touching the CAD engine. Gated on CURRENT balance, not a
+    # permanent "ever bought a pack" flag - see the project's own
+    # decision on this. BULK_TIER_CREDIT_THRESHOLD is deliberately a
+    # plain number against the existing wallet_credits balance rather
+    # than a new "how was this credit acquired" column: 100 credits is
+    # comfortably more than anyone would realistically top up one credit
+    # at a time (BOTCHAIN_CREDIT_PRICE_BOT's use case), so it reads as
+    # "clearly still sitting on a chunk of a pack_1000/pack_10000
+    # purchase" without needing to track purchase provenance at all.
+    BULK_TIER_CREDIT_THRESHOLD: int = 100
+    PROMPT_REFINE_MODEL: str = "deepseek-v4-flash"
+    PROMPT_REFINE_MAX_HISTORY_MESSAGES: int = 20
+    PROMPT_REFINE_MAX_MESSAGE_CHARS: int = 2000
+    # Own rate limit, separate from RATE_LIMIT_GENERATE - this costs real
+    # DeepSeek tokens per call with no BOT payment attached to absorb
+    # abuse the way /generate's payment requirement naturally does.
+    RATE_LIMIT_PROMPT_REFINE: str = "20/hour"
 
     # --- Cloudflare R2 storage (optional; falls back to local disk) ----
     R2_ACCOUNT_ID: str | None = None
@@ -116,8 +142,12 @@ class Settings(BaseSettings):
     BOTCHAIN_MAINNET_RPC_URL: str = "https://rpc.botchain.ai"
     BOTCHAIN_MAINNET_EXPLORER_URL: str = "https://scan.botchain.ai"
 
-    BOTCHAIN_KEY_ISSUE_PRICE_BOT: float = 5.0
-    BOTCHAIN_PER_CALL_PRICE_BOT: float = 0.2
+    # BOTCHAIN_KEY_ISSUE_PRICE_BOT / BOTCHAIN_PER_CALL_PRICE_BOT removed -
+    # they priced the retired API-key system (5 BOT to mint a key, 0.2
+    # BOT per call). Nothing charges these anymore: /generate, /export,
+    # and a2mcp_botchain/server.py's MCP tools all spend prepaid credits
+    # instead (BOTCHAIN_CREDIT_PRICE_BOT and the two pack settings
+    # below). See db.py and wallet_auth.py's module docstrings.
     BOTCHAIN_CONFIRMATION_BLOCKS: int = 1
 
     # Free STL-only preview (/preview) - no wallet, no API key, no BOT
@@ -143,6 +173,32 @@ class Settings(BaseSettings):
     # and held separately from the treasury.
     DESIGN_REGISTRY_ADDRESS: str | None = None
     ANCHOR_WALLET_PRIVATE_KEY: str | None = None
+
+    # --- Wallet sign-in (wallet_auth.py) ------------------------------------
+    # Replaces the old "API key bought via a 5 BOT payment, cached in one
+    # browser" identity model with a free signature-based login: connect
+    # a wallet, sign a nonce message (no gas, nothing on-chain), get a
+    # session. See wallet_auth.py's module docstring for the full flow.
+    WALLET_NONCE_TTL_SECONDS: int = 600  # 10 minutes to complete the sign
+    WALLET_SESSION_TTL_SECONDS: int = 7 * 24 * 3600  # 7 days
+
+    # --- Credits (replaces the old per-call BOT payment model) ------------
+    # /generate spends 1 credit per call (db.consume_credit) instead of
+    # demanding a fresh on-chain payment every time - see
+    # POST /credits/purchase. a2mcp_botchain/server.py's MCP tools use
+    # the exact same mechanism now too. All three numbers below buy
+    # credits the SAME underlying way, just different batch sizes:
+    # pay-as-you-go is "buy 1 credit, spend it immediately." The two
+    # packs intentionally have the identical per-credit price (5/1000 ==
+    # 50/10000 == 0.005 BOT/credit) - a consistent bulk rate, not an
+    # escalating discount - while single-credit purchases pay a 10x
+    # premium for not committing to volume. Exports remain free once a
+    # job exists - see GET /export/{fmt}/{job_id}'s docstring.
+    BOTCHAIN_CREDIT_PRICE_BOT: float = 0.05
+    BOTCHAIN_PACK_1000_PRICE_BOT: float = 5.0
+    BOTCHAIN_PACK_1000_CREDITS: int = 1000
+    BOTCHAIN_PACK_10000_PRICE_BOT: float = 50.0
+    BOTCHAIN_PACK_10000_CREDITS: int = 10000
 
     # Railway auto-injects this at deploy time - no manual setting
     # needed there. Falls back to "unknown" for local runs. This is
