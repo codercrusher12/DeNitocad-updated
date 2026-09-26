@@ -11,6 +11,8 @@ numpy>=1.26.4,<2.0
 openai>=1.55.3   # DeepSeek client (deepseek_parser.py) - OpenAI-compatible API via base_url override. Was pinned to 1.35.13, which hardcodes a `proxies=` kwarg incompatible with httpx>=0.28 (pinned below) - fixed upstream in 1.55.3, see https://github.com/openai/openai-python/issues/1902
 boto3>=1.34.0   # R2 (S3-compatible) storage - see storage.py, optional at runtime
 slowapi==0.1.9   # per-IP rate limiting on /generate and /api/keys/generate - see web_app.py
+stripe>=11.0.0   # stripe_pay.py - subscription Checkout + webhook verification, not independently confirmed against PyPI (no network access in this environment) - check before relying on it
+google-auth>=2.35.0   # google_auth.py - verifies Google Identity Services ID tokens for email sign-up, not independently confirmed against PyPI (no network access in this environment) - check before relying on it
 
 # --- dev / test / lint (not needed at runtime, but pinned here so a
 # single `pip install -r requirements.txt` gets a fully working dev

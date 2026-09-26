@@ -189,16 +189,123 @@ class Settings(BaseSettings):
     # the exact same mechanism now too. All three numbers below buy
     # credits the SAME underlying way, just different batch sizes:
     # pay-as-you-go is "buy 1 credit, spend it immediately." The two
-    # packs intentionally have the identical per-credit price (5/1000 ==
-    # 50/10000 == 0.005 BOT/credit) - a consistent bulk rate, not an
+    # packs intentionally have the identical per-credit price (1/1000 ==
+    # 10/10000 == 0.001 BOT/credit) - a consistent bulk rate, not an
     # escalating discount - while single-credit purchases pay a 10x
     # premium for not committing to volume. Exports remain free once a
     # job exists - see GET /export/{fmt}/{job_id}'s docstring.
-    BOTCHAIN_CREDIT_PRICE_BOT: float = 0.05
-    BOTCHAIN_PACK_1000_PRICE_BOT: float = 5.0
+    BOTCHAIN_CREDIT_PRICE_BOT: float = 0.01
+    BOTCHAIN_PACK_1000_PRICE_BOT: float = 1.0
     BOTCHAIN_PACK_1000_CREDITS: int = 1000
-    BOTCHAIN_PACK_10000_PRICE_BOT: float = 50.0
+    BOTCHAIN_PACK_10000_PRICE_BOT: float = 10.0
     BOTCHAIN_PACK_10000_CREDITS: int = 10000
+
+    # --- BOT Chain USDT (stripe_pay.py's on-chain sibling) - BLOCKED ------
+    # Deliberately left unset. Do NOT hardcode a USDT contract address
+    # found by web search - a wrong ERC20 address here doesn't fail
+    # loudly, it verifies against a different (or fraudulent) token
+    # while real customer payments go unrecognized, and there is no
+    # authoritative BOT Chain USDT address confirmed as of this writing.
+    # Get this from BOT Chain's own docs/explorer or from ShieldGuard's
+    # existing payment config (packages/backend/connections.js or
+    # webhook.js - see the BOTCHAIN_TESTNET/MAINNET comments above,
+    # which already cite ShieldGuard as corroboration for the RPC/chain-
+    # id values, the same source should have this). Every USDT-paid
+    # route stays unbuilt until this is set to something verified.
+    BOTCHAIN_USDT_CONTRACT_ADDRESS: str | None = None
+    BOTCHAIN_USDT_DECIMALS: int = 6  # standard for USDT on every chain it's bridged to
+
+    # --- Subscription (stripe_pay.py) --------------------------------------
+    # Three tiers, each its own Stripe recurring Price - see
+    # docs/module comments in db.py's charge_generation for why Starter
+    # and the other two use genuinely different mechanics, not just a
+    # bigger number:
+    #
+    #   Starter ($5):       100 subscription credits/period (a pool that
+    #                       DEPLETES, same shape as before) - but now
+    #                       ALSO throttled to at most daily_generation_cap
+    #                       generations per rolling 24h, so the pool
+    #                       can't be burned through in one sitting.
+    #   Engineer ($10):     no credit pool at all. Generation is simply
+    #                       free, uncounted against any credit balance,
+    #                       up to daily_generation_cap per rolling 24h.
+    #   Professional ($50): same shape as Engineer, higher cap, plus an
+    #                       "advanced_engineering" entitlement that is
+    #                       DELIBERATELY UNIMPLEMENTED - named here so
+    #                       the tier exists and can be sold, but nothing
+    #                       in the codebase checks it yet. Same
+    #                       treatment as "file_exports" below: no scope
+    #                       has been defined for it.
+    #
+    # STRIPE_PRICE_ID_* are recurring Price object ids from the Stripe
+    # dashboard (price_..., not the Product id prod_...) - one env var
+    # per tier since Checkout needs to know which Price to charge.
+    # STRIPE_WEBHOOK_SECRET verifies POST /webhooks/stripe's signature
+    # (whsec_...) - without it, anyone could POST a fake "payment
+    # succeeded" event and grant themselves a subscription for free.
+    #
+    # Team ($500, 5 seats) and Enterprise (custom) are NOT here - both
+    # need infrastructure this app doesn't have (a seat/organization
+    # model; Enterprise is normally manual invoicing, not a Stripe
+    # self-serve Price at all), not just a config entry. Left for a
+    # later, separate decision.
+    STRIPE_SECRET_KEY: str | None = None
+    STRIPE_WEBHOOK_SECRET: str | None = None
+    STRIPE_PRICE_ID_STARTER: str | None = None
+    STRIPE_PRICE_ID_ENGINEER: str | None = None
+    STRIPE_PRICE_ID_PROFESSIONAL: str | None = None
+
+    # --- Email sign-up via Google (google_auth.py) --------------------------
+    # A SECOND, independent identity path alongside wallet sign-in, not
+    # a replacement - see the conversation that scoped this: Stripe-only
+    # (an email account has no wallet to pay BOT/USDT from), 1 free
+    # credit on signup granted immediately (not gated on a first
+    # payment, unlike the wallet flow's 10 - a real Google account has
+    # more inherent friction than a free Ethereum keypair, and 1 credit
+    # is a small enough blast radius even if that assumption is wrong).
+    # GOOGLE_OAUTH_CLIENT_ID is NOT a secret - it's the public client id
+    # Google Identity Services needs client-side too, exposed via
+    # GET /config/auth precisely so it doesn't need hardcoding into the
+    # static frontend file.
+    GOOGLE_OAUTH_CLIENT_ID: str | None = None
+    EMAIL_SIGNUP_BONUS_CREDITS: int = 1
+
+    @property
+    def subscription_tiers(self) -> dict[str, dict]:
+        """Keyed by our own internal tier name (stored in
+        subscriptions.tier), not by Stripe's price id - stripe_pay.py's
+        _TIER_BY_PRICE_ID maps a webhook's price id back to one of
+        these keys. monthly_credits == 0 means "no pool, pure daily
+        allowance" (Engineer/Professional); > 0 means "pool that
+        depletes, also throttled by the daily cap" (Starter) - see
+        db.charge_generation for exactly how that distinction is used.
+        file_exports/advanced_engineering are named for product/UI
+        purposes only; nothing reads them yet (see the module comment
+        above)."""
+        return {
+            "starter": {
+                "stripe_price_id": self.STRIPE_PRICE_ID_STARTER,
+                "monthly_credits": 100,
+                "daily_generation_cap": 10,
+                "features": {"prompt_refinement": True, "file_exports": "undefined"},
+            },
+            "engineer": {
+                "stripe_price_id": self.STRIPE_PRICE_ID_ENGINEER,
+                "monthly_credits": 0,
+                "daily_generation_cap": 30,
+                "features": {"prompt_refinement": True, "file_exports": "undefined"},
+            },
+            "professional": {
+                "stripe_price_id": self.STRIPE_PRICE_ID_PROFESSIONAL,
+                "monthly_credits": 0,
+                "daily_generation_cap": 150,
+                "features": {
+                    "prompt_refinement": True,
+                    "file_exports": "undefined",
+                    "advanced_engineering": "undefined",
+                },
+            },
+        }
 
     # Railway auto-injects this at deploy time - no manual setting
     # needed there. Falls back to "unknown" for local runs. This is

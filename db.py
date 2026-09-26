@@ -150,10 +150,84 @@ def init_db() -> None:
             )
             """
         )
+        # Subscription credits are a SEPARATE pool from wallet_credits
+        # (purchased credits), not a modifier on the same balance - see
+        # consume_credit_waterfall's docstring for why they can't share
+        # a column: subscription credits reset to 100 every renewal and
+        # expire at period end, purchased credits never expire and never
+        # reset. Mixing them into one number would make either "reset to
+        # 100" wipe out credits the user paid real money for, or "never
+        # expires" make the subscription's own reset a no-op.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                wallet_address TEXT PRIMARY KEY,
+                stripe_customer_id TEXT,
+                stripe_subscription_id TEXT,
+                status TEXT NOT NULL DEFAULT 'inactive',
+                tier TEXT NOT NULL DEFAULT 'starter',
+                subscription_credits INTEGER NOT NULL DEFAULT 0,
+                current_period_end TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        # One row per wallet, ever - the PRIMARY KEY is what makes
+        # claim_signup_bonus's INSERT a one-time-only atomic claim
+        # instead of a check-then-credit race. qualifying_payment_id is
+        # kept for audit (which tx/invoice/session actually unlocked
+        # this), not re-validated on read.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signup_bonus_claims (
+                wallet_address TEXT PRIMARY KEY,
+                claimed_at TEXT NOT NULL,
+                qualifying_payment_id TEXT NOT NULL
+            )
+            """
+        )
+        # A SECOND identity path alongside wallet sign-in, not a
+        # replacement - see get_or_create_email_account's docstring.
+        # account_id is what gets used everywhere else in this file
+        # (wallet_credits.wallet_address, subscriptions.wallet_address,
+        # jobs.user_id, sessions.wallet_address, all of it) - those
+        # tables never learn a new identity type exists, they just see
+        # another string in a column that was always just TEXT. Only
+        # this table and google_auth.py know Google was involved at
+        # all. Keyed on google_sub, NOT email - see this module's own
+        # docstring on why sub is the permanent identity and email
+        # isn't.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_accounts (
+                account_id TEXT PRIMARY KEY,
+                google_sub TEXT UNIQUE NOT NULL,
+                email TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_wallet_address ON sessions(wallet_address)")
+        # jobs(user_id, created_at) backs charge_generation's rolling-24h
+        # COUNT(*) query - the two single-column indexes above already
+        # help, but a composite index matching that query's exact WHERE
+        # shape (user_id = ? AND created_at > ?) avoids a merge of two
+        # index scans on every /generate call from a subscribed wallet.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_id, created_at)")
+        # subscriptions.tier didn't exist before the three-tier model -
+        # ALTER TABLE ADD COLUMN on a table that already has it raises
+        # OperationalError, so this is guarded rather than IF NOT EXISTS
+        # (sqlite's ALTER TABLE has no such clause). Safe to run every
+        # startup: a fresh CREATE TABLE above already includes the
+        # column via subscriptions' own definition below, so this only
+        # ever fires against an old deployed file that predates tiers.
+        try:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN tier TEXT NOT NULL DEFAULT 'starter'")
+        except sqlite3.OperationalError:
+            pass
         # nonces.nonce, sessions.session_id, and wallet_credits.wallet_address
         # are all PRIMARY KEY, so each already has an implicit index -
         # no separate CREATE INDEX needed for those lookups.
@@ -235,6 +309,52 @@ def list_jobs(user_id: str = "default", limit: int = 50) -> list[dict[str, Any]]
             (user_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def find_job_owner(filename: str) -> str | None:
+    """Resolve a /download/{fmt}/{filename} request back to whichever
+    job produced that file, for the ownership check web_app.py's
+    download routes need before streaming a private artifact. Two
+    naming schemes exist on disk, so this checks both:
+
+    On-demand exports (cad_generator.export_format_for_job - STEP,
+    IGES, DXF, PDF, and STL fetched via /export/stl/{job_id} rather
+    than inline) name files "{job_id}_{fmt}.{ext}" - job_id parses
+    straight out of the filename (it's a real uuid4, hyphenated), no
+    DB round trip needed for the common case.
+
+    The inline STL /generate and /preview build at generation time
+    (cad_generator._generate_single_part) instead names files
+    "{part_type}_{uuid4().hex}.stl" - a DIFFERENT, non-job-id uuid
+    (no hyphens), so that prefix never parses as a job id. Those are
+    found by matching the filename against the jobs table's own
+    stored stl_url/step_url column instead, which is populated at
+    record_job time with whatever URL the file was actually served at.
+
+    Returns the owning job's user_id (a wallet address, or the literal
+    string "anonymous" for a /preview job - see web_app.py's own
+    handling of that value), or None if no job claims this filename at
+    all."""
+    import uuid as _uuid
+    from pathlib import Path as _Path
+
+    candidate_job_id = _Path(filename).stem.rsplit("_", 1)[0]
+    try:
+        _uuid.UUID(candidate_job_id)
+    except ValueError:
+        pass
+    else:
+        job = get_job(candidate_job_id)
+        if job is not None:
+            return job["user_id"]
+
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id FROM jobs WHERE step_url LIKE ? OR stl_url LIKE ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (f"%/{filename}", f"%/{filename}"),
+        ).fetchone()
+        return row["user_id"] if row else None
 
 
 # ---------------------------------------------------------------- payments ----
@@ -435,7 +555,14 @@ def consume_credit(wallet_address: str, amount: int = 1) -> bool:
     prevents a payment from being double-spent). Returns True if the
     balance was sufficient and got decremented, False otherwise
     (including a wallet with no row at all - never spent anything, so
-    never has a balance)."""
+    never has a balance).
+
+    This spends PURCHASED credits only. For the subscription-aware
+    spend order (subscription credits first, this pool second), use
+    consume_credit_waterfall instead - this function is kept as-is
+    because add_credits/consume_credit are still the right pair for
+    purchased credits specifically, and other code may reasonably want
+    to spend from that pool alone."""
     with get_conn() as conn:
         cur = conn.execute(
             """
@@ -445,3 +572,317 @@ def consume_credit(wallet_address: str, amount: int = 1) -> bool:
             (amount, _now(), wallet_address.lower(), amount),
         )
         return cur.rowcount > 0
+
+
+def get_subscription(wallet_address: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM subscriptions WHERE wallet_address = ?",
+            (wallet_address.lower(),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_subscription_by_stripe_customer_id(stripe_customer_id: str) -> dict[str, Any] | None:
+    """Stripe's invoice/subscription webhook events carry a customer id,
+    never our wallet_address - this is how stripe_pay.py's webhook
+    handler maps one back to the other. Relies on
+    checkout.session.completed having already run upsert_subscription
+    once (with whatever status it has at that point) to create the
+    wallet_address<->stripe_customer_id link in the first place; an
+    invoice event for a customer_id with no matching row here means
+    that linking step hasn't happened yet, which stripe_pay.py treats
+    as an error worth logging loudly, not silently ignoring."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM subscriptions WHERE stripe_customer_id = ?",
+            (stripe_customer_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def upsert_subscription(
+    wallet_address: str,
+    *,
+    stripe_customer_id: str,
+    stripe_subscription_id: str,
+    status: str,
+    tier: str,
+    subscription_credits: int,
+    current_period_end: str | None,
+) -> None:
+    """Called on checkout completion AND on every renewal invoice - both
+    are "start a fresh subscription_credits allotment for a period",
+    the only difference is whether a row already existed. subscription_
+    credits is passed in rather than always hardcoded to 100 here, so
+    the plan's credit amount can change later without editing this
+    function. Overwrites (does not add to) any leftover
+    subscription_credits from the prior period - see consume_credit_
+    waterfall's docstring: unused subscription credits do NOT roll
+    over, this is where that reset actually happens. tier is one of
+    config.py's settings.subscription_tiers keys ("starter",
+    "engineer", "professional") - charge_generation reads it back to
+    find the right daily_generation_cap and pool-vs-no-pool behavior
+    for this wallet."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO subscriptions (
+                wallet_address, stripe_customer_id, stripe_subscription_id,
+                status, tier, subscription_credits, current_period_end, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(wallet_address) DO UPDATE SET
+                stripe_customer_id = excluded.stripe_customer_id,
+                stripe_subscription_id = excluded.stripe_subscription_id,
+                status = excluded.status,
+                tier = excluded.tier,
+                subscription_credits = excluded.subscription_credits,
+                current_period_end = excluded.current_period_end,
+                updated_at = excluded.updated_at
+            """,
+            (
+                wallet_address.lower(),
+                stripe_customer_id,
+                stripe_subscription_id,
+                status,
+                tier,
+                subscription_credits,
+                current_period_end,
+                _now(),
+            ),
+        )
+
+
+def set_subscription_status(stripe_subscription_id: str, status: str) -> None:
+    """Called on a Stripe webhook that changes status without granting a
+    new period (cancellation taking effect, payment failure, etc.) -
+    looked up by stripe_subscription_id since these webhooks don't
+    carry our wallet_address. Deliberately does NOT touch
+    subscription_credits: per the agreed model, credits earned in the
+    current period stay spendable until current_period_end regardless
+    of status, they're cleared by the *next* period simply never
+    arriving (upsert_subscription is never called again), not by this
+    function zeroing them early."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE subscriptions SET status = ?, updated_at = ? WHERE stripe_subscription_id = ?",
+            (status, _now(), stripe_subscription_id),
+        )
+
+
+def is_subscription_entitled(wallet_address: str) -> bool:
+    """Whether this wallet currently gets subscription-gated features
+    (prompt refinement, file exports - whatever product decides those
+    mean, see the open question flagged separately). Checks BOTH status
+    and current_period_end: status can lag reality by up to a webhook
+    delivery delay, but current_period_end is the actual boundary
+    Stripe already charged for, so a wallet stays entitled through the
+    period it paid for even if e.g. the cancellation webhook arrives a
+    few seconds early."""
+    sub = get_subscription(wallet_address)
+    if sub is None or not sub["current_period_end"]:
+        return False
+    if sub["status"] not in ("active", "trialing"):
+        return False
+    return datetime.fromisoformat(sub["current_period_end"]) > datetime.now(timezone.utc)
+
+
+def consume_credit_waterfall(wallet_address: str, amount: int = 1) -> str | None:
+    """Spends `amount` credits, subscription pool first, purchased pool
+    second - the agreed order, so a subscriber's included credits get
+    used before anything they separately paid for. Both attempts run
+    inside the SAME connection (one `with get_conn()` block, one
+    implicit transaction), which matters: checking the subscription
+    balance and falling back to the purchased balance are two
+    statements, and without a shared transaction a second concurrent
+    call for the same wallet could interleave between them and double-
+    spend the same purchased credit that two "subscription insufficient"
+    checks both just saw. Returns "subscription" or "purchased" for
+    which pool paid, or None if neither had enough."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE subscriptions SET subscription_credits = subscription_credits - ?, updated_at = ?
+            WHERE wallet_address = ? AND subscription_credits >= ?
+                AND status IN ('active', 'trialing')
+                AND current_period_end > ?
+            """,
+            (amount, _now(), wallet_address.lower(), amount, _now()),
+        )
+        if cur.rowcount > 0:
+            return "subscription"
+
+        cur = conn.execute(
+            """
+            UPDATE wallet_credits SET balance = balance - ?, updated_at = ?
+            WHERE wallet_address = ? AND balance >= ?
+            """,
+            (amount, _now(), wallet_address.lower(), amount),
+        )
+        if cur.rowcount > 0:
+            return "purchased"
+
+        return None
+
+
+def count_generations_last_24h(wallet_address: str) -> int:
+    """Backs every subscription tier's daily_generation_cap. Deliberately
+    a rolling 24 hours from "now", not a UTC-midnight counter column -
+    see the conversation that settled this: no timezone to store per
+    wallet, no midnight-reset cliff, at the cost of being a COUNT query
+    over jobs rather than an O(1) counter compare. Counts real,
+    successful, credit/allowance-consuming generations only - reuses
+    the jobs table's own user_id + created_at rather than a separate
+    log table, since every /generate call already writes a jobs row
+    keyed by the wallet address (anonymous /preview jobs use user_id
+    "anonymous" and never match a real wallet address here, so they
+    never count against anyone's cap)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM jobs WHERE user_id = ? AND created_at > ?",
+            (wallet_address.lower(), cutoff),
+        ).fetchone()
+        return row["c"]
+
+
+def charge_generation(wallet_address: str) -> str | None:
+    """The full policy for what pays for one /generate call, given this
+    wallet's current subscription (if any). Looks up the tier's config
+    itself (settings.subscription_tiers) rather than making the caller
+    pass it in - web_app.py just calls charge_generation(wallet), full
+    stop. Returns which mechanism paid:
+
+        "subscription_daily" - Engineer/Professional: no credit pool at
+            all (tier_config["monthly_credits"] == 0), generation is
+            free and uncounted against any balance, as long as
+            count_generations_last_24h is under daily_generation_cap.
+
+        "subscription_credit" - Starter: paid from the subscription_
+            credits pool, gated by BOTH the pool having enough left AND
+            still being under daily_generation_cap - the cap is a
+            throttle on the pool here, not a separate free allowance.
+
+        "purchased" - used whenever there's no active subscription, or
+            the active one's relevant limit (today's cap, or the
+            pool) is already used up for this wallet. A paying
+            subscriber who goes over their daily/pool limit falls back
+            to spending their own purchased credits rather than being
+            hard-blocked until the window clears - see web_app.py's
+            /generate docstring for why that's the chosen default,
+            easy to flip.
+
+        None - nothing left to charge; caller should 402.
+
+    KNOWN, ACCEPTED RACE: the daily-cap check (count_generations_last_24h)
+    and the jobs-row insert that makes a generation count happen in two
+    separate steps, not one atomic statement (unlike the credit-pool
+    checks below, which use UPDATE...WHERE and so remain atomic).
+    Two concurrent /generate calls for the same wallet, sitting exactly
+    at cap - 1 remaining, could both read "under cap" and both proceed,
+    letting a subscriber generate one extra than their cap that instant.
+    Same category as design_registry.py's documented nonce race:
+    self-limiting (costs nothing but a slightly generous cap enforcement
+    for that wallet, not a cross-wallet or revenue-losing bug), not
+    worth a row-locking scheme at this scale. Left on the same backlog
+    if daily concurrent volume per wallet ever becomes real."""
+    sub = get_subscription(wallet_address)
+    if sub is not None and is_subscription_entitled(wallet_address):
+        tier_config = settings.subscription_tiers.get(sub["tier"])
+        if tier_config is None:
+            # Subscribed to a tier name that no longer exists in
+            # config.py (renamed/removed) - fail safe to purchased
+            # credits below rather than crashing on a KeyError.
+            logger.error("subscription %s has unknown tier %r", wallet_address, sub["tier"])
+        else:
+            cap = tier_config["daily_generation_cap"]
+            used_today = count_generations_last_24h(wallet_address)
+
+            if tier_config["monthly_credits"] > 0:
+                if used_today < cap:
+                    with get_conn() as conn:
+                        cur = conn.execute(
+                            "UPDATE subscriptions SET subscription_credits = subscription_credits - 1, updated_at = ? "
+                            "WHERE wallet_address = ? AND subscription_credits >= 1",
+                            (_now(), wallet_address.lower()),
+                        )
+                        if cur.rowcount > 0:
+                            return "subscription_credit"
+            else:
+                if used_today < cap:
+                    return "subscription_daily"
+
+    if consume_credit(wallet_address):
+        return "purchased"
+    return None
+
+
+def claim_signup_bonus(wallet_address: str, qualifying_payment_id: str) -> bool:
+    """One-time 10-credit bonus, unlocked by the wallet's first verified
+    payment (BOT, USDT, or Stripe) - not by connecting a wallet, see
+    the earlier discussion: a wallet costs nothing to generate, so
+    gating on wallet creation alone has no real economic friction and
+    would just be farmed. signup_bonus_claims.wallet_address is a
+    PRIMARY KEY, so the INSERT itself is the one-time guarantee - two
+    concurrent calls for the same wallet can't both succeed, whichever
+    one hits the constraint second gets sqlite3.IntegrityError and this
+    returns False without granting credits twice. Call this AFTER the
+    payment is already verified and recorded, never before - passing
+    a payment that turns out invalid would grant free credits for
+    nothing."""
+    with get_conn() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO signup_bonus_claims (wallet_address, claimed_at, qualifying_payment_id) VALUES (?, ?, ?)",
+                (wallet_address.lower(), _now(), qualifying_payment_id),
+            )
+        except sqlite3.IntegrityError:
+            return False
+
+    add_credits(wallet_address, 10)
+    return True
+
+
+def get_or_create_email_account(google_sub: str, email: str) -> tuple[str, bool]:
+    """The entry point for the Google sign-in identity path - called on
+    EVERY Google sign-in, not just the first one, same as how a wallet
+    calls db.create_session on every sign-in regardless of whether
+    that wallet's been seen before. Returns (account_id, is_new_account).
+
+    account_id is "email:{google_sub}" - a string shaped nothing like a
+    real wallet address, deliberately: nothing downstream (wallet_credits,
+    subscriptions, jobs, sessions - see this table's own comment in
+    init_db) validates that its identity column IS an Ethereum address,
+    they just treat it as an opaque TEXT primary key, so reusing that
+    exact machinery for a non-wallet identity works as long as the two
+    kinds of identifier can never collide. They can't: a real wallet
+    address is always "0x" + 40 hex chars, never contains a literal
+    colon.
+
+    is_new_account is True only the FIRST time this google_sub is ever
+    seen - the INSERT's UNIQUE(google_sub) constraint makes that
+    determination atomic (two simultaneous sign-ins for a brand-new
+    Google account can't both see is_new=True), the same pattern
+    claim_signup_bonus uses for wallets. The caller (wallet_auth.
+    verify_google_and_create_session) uses is_new_account to decide
+    whether to grant the 1-credit email signup bonus - NOT gated on a
+    first payment the way the wallet flow's 10-credit bonus is, see
+    config.py's EMAIL_SIGNUP_BONUS_CREDITS comment for why that's a
+    deliberately different tradeoff for this identity type."""
+    account_id = f"email:{google_sub}"
+    with get_conn() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO email_accounts (account_id, google_sub, email, created_at) VALUES (?, ?, ?, ?)",
+                (account_id, google_sub, email, _now()),
+            )
+            return account_id, True
+        except sqlite3.IntegrityError:
+            # Already exists - update the stored email in case it
+            # changed at Google's end since last sign-in (sub is
+            # permanent, email is not - see this module's docstring).
+            conn.execute(
+                "UPDATE email_accounts SET email = ? WHERE account_id = ?",
+                (email, account_id),
+            )
+            return account_id, False

@@ -19,6 +19,7 @@ from a2mcp.server import mcp_app, mcp_app_gated
 from a2mcp_botchain.server import mcp_app as mcp_app_botchain
 import botchain_pay
 import prompt_refine
+import stripe_pay
 import wallet_auth
 from cad_generator import CADGenerator
 from config import settings
@@ -261,6 +262,36 @@ async def auth_verify(request: Request, body: VerifyRequest):
     return wallet_auth.verify_and_create_session(body.wallet_address, body.nonce, body.signature)
 
 
+class GoogleAuthRequest(BaseModel):
+    id_token: str  # the credential Google Identity Services hands the browser on sign-in
+
+
+@app.post("/auth/google")
+@limiter.limit("20/minute")
+async def auth_google(request: Request, body: GoogleAuthRequest):
+    """The Google-identity counterpart to POST /auth/verify - one step,
+    not two, since Google's own ID token already IS the proof (no
+    nonce/challenge needed the way a wallet signature needs one).
+    Returns the same {session_id, wallet_address, expires_at} shape
+    plus "email", so the frontend's existing wallet-session storage/
+    Authorization-header code works completely unchanged - see
+    wallet_auth.verify_google_and_create_session's docstring."""
+    return wallet_auth.verify_google_and_create_session(body.id_token)
+
+
+@app.get("/config/auth")
+async def config_auth():
+    """Public, no wallet needed. GOOGLE_OAUTH_CLIENT_ID is not a secret
+    (Google Identity Services needs it client-side to even render the
+    Sign-In button) - exposed here so it's never hardcoded into the
+    static frontend file, same reasoning as GET /config/chain and
+    GET /subscribe/tiers above."""
+    return {
+        "google_client_id": settings.GOOGLE_OAUTH_CLIENT_ID,
+        "google_signin_enabled": bool(settings.GOOGLE_OAUTH_CLIENT_ID),
+    }
+
+
 @app.get("/auth/me")
 async def auth_me(wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)]):
     """Lets the frontend check 'am I still signed in' and show the
@@ -306,15 +337,21 @@ class CreditsPurchaseRequest(BaseModel):
 @app.get("/credits/balance")
 async def credits_balance(wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)]):
     balance = db.get_credit_balance(wallet["wallet_address"])
+    subscribed = db.is_subscription_entitled(wallet["wallet_address"])
     return {
         "wallet_address": wallet["wallet_address"],
         "balance": balance,
+        "subscribed": subscribed,
         # Convenience flag so the frontend doesn't need to know
         # BULK_TIER_CREDIT_THRESHOLD itself to decide whether to show
         # the prompt-refinement chat entry point - it's also exposed
         # directly via GET /config/chain for anywhere that needs the
         # raw number (e.g. an upsell message before reaching it).
-        "prompt_refine_eligible": balance >= settings.BULK_TIER_CREDIT_THRESHOLD,
+        # An active subscriber gets this regardless of purchased
+        # balance - additive to the existing threshold, not a
+        # replacement for it, so a high-balance pay-as-you-go wallet
+        # keeps the access it already had.
+        "prompt_refine_eligible": subscribed or balance >= settings.BULK_TIER_CREDIT_THRESHOLD,
     }
 
 
@@ -352,11 +389,111 @@ async def credits_purchase(
         raise HTTPException(status_code=402, detail=exc.message) from exc
 
     new_balance = db.add_credits(wallet["wallet_address"], credits_granted)
+    bonus_granted = db.claim_signup_bonus(wallet["wallet_address"], qualifying_payment_id=body.tx_hash)
+    if bonus_granted:
+        new_balance = db.get_credit_balance(wallet["wallet_address"])
     logger.info(
         "credits purchased",
-        extra={"wallet_address": wallet["wallet_address"], "tier": body.tier, "credits_granted": credits_granted},
+        extra={
+            "wallet_address": wallet["wallet_address"],
+            "tier": body.tier,
+            "credits_granted": credits_granted,
+            "signup_bonus_granted": bonus_granted,
+        },
     )
-    return {"wallet_address": wallet["wallet_address"], "credits_granted": credits_granted, "balance": new_balance}
+    return {
+        "wallet_address": wallet["wallet_address"],
+        "credits_granted": credits_granted,
+        "balance": new_balance,
+        "signup_bonus_granted": bonus_granted,
+    }
+
+
+class SubscribeCheckoutRequest(BaseModel):
+    tier: str  # "starter" | "engineer" | "professional" - see config.py's settings.subscription_tiers
+    success_url: str
+    cancel_url: str
+
+
+@app.get("/subscribe/tiers")
+async def subscribe_tiers():
+    """Public, no wallet needed - the frontend's pricing page reads this
+    live instead of hardcoding caps/credits (see frontend/index.html's
+    earlier pricing-copy drift bug, which is exactly the failure mode
+    this avoids repeating for the subscription tiers)."""
+    return {name: {k: v for k, v in cfg.items() if k != "stripe_price_id"} for name, cfg in settings.subscription_tiers.items()}
+
+
+@app.post("/subscribe/checkout")
+@limiter.limit(settings.RATE_LIMIT_GENERATE)
+async def subscribe_checkout(
+    request: Request,
+    body: SubscribeCheckoutRequest,
+    wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)],
+):
+    """Creates a Stripe Checkout session for a NEW subscription at
+    body.tier and returns its URL for the frontend to redirect to.
+    success_url/cancel_url are caller-supplied (not hardcoded here)
+    since the same backend serves both the embedded demo above and
+    frontend/index.html, each wanting the browser to land back on
+    itself. See stripe_pay.py's module docstring for how the wallet
+    address AND tier survive the round trip to Stripe and back
+    (client_reference_id and the Checkout line item's price id,
+    respectively)."""
+    if db.is_subscription_entitled(wallet["wallet_address"]):
+        raise HTTPException(
+            status_code=409,
+            detail="This wallet already has an active subscription. Manage/change plans in the Stripe customer portal.",
+        )
+    try:
+        checkout_url = stripe_pay.create_checkout_session(
+            wallet["wallet_address"], body.tier, body.success_url, body.cancel_url
+        )
+    except PaymentError as exc:
+        raise HTTPException(status_code=402, detail=exc.message) from exc
+    return {"checkout_url": checkout_url}
+
+
+@app.get("/subscription/status")
+async def subscription_status(wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)]):
+    sub = db.get_subscription(wallet["wallet_address"])
+    entitled = db.is_subscription_entitled(wallet["wallet_address"])
+    tier_config = settings.subscription_tiers.get(sub["tier"]) if (sub and entitled) else None
+    return {
+        "wallet_address": wallet["wallet_address"],
+        "subscribed": entitled,
+        "tier": sub["tier"] if sub else None,
+        "status": sub["status"] if sub else None,
+        "subscription_credits": sub["subscription_credits"] if sub else 0,
+        "current_period_end": sub["current_period_end"] if sub else None,
+        # Only meaningful (and only computed) for an entitled
+        # subscription - see db.charge_generation for how this cap
+        # interacts with subscription_credits above (Starter: both
+        # apply; Engineer/Professional: this is the only limit).
+        "daily_generation_cap": tier_config["daily_generation_cap"] if tier_config else None,
+        "generations_last_24h": db.count_generations_last_24h(wallet["wallet_address"]) if tier_config else None,
+    }
+
+
+
+@app.post("/webhooks/stripe")
+async def webhooks_stripe(request: Request):
+    """No wallet_auth here - this is called by Stripe's own servers, not
+    a signed-in user. Authenticity comes entirely from the signature
+    check inside stripe_pay.handle_webhook_event (STRIPE_WEBHOOK_SECRET),
+    not from anything in this route. The raw body bytes are required for
+    that check to pass - do NOT parse this as JSON first and re-serialize
+    it, Stripe signs the exact bytes it sent."""
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+    try:
+        result = stripe_pay.handle_webhook_event(payload, sig_header)
+    except PaymentError as exc:
+        # 400, not 402 - this tells Stripe "retry me" (bad signature,
+        # or a wallet link that hasn't arrived yet - see
+        # stripe_pay._on_invoice_paid), not "payment failed."
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    return {"received": True, "result": result}
 
 
 # ------------------------------------------------------ prompt refinement ----
@@ -1046,6 +1183,41 @@ async def root():
                 renderer.render(scene, camera);
             }
             
+            async function loadOwnedStl(url) {
+                // /download/{fmt}/{filename} is now ownership-gated for
+                // everything except anonymous /preview output (see
+                // db.find_job_owner and web_app.py's _resolve_owned_download).
+                // A bare STLLoader.load(url) or <a href> can't attach the
+                // Authorization header a paid job's file now needs - same
+                // reason downloadFormat() below already has to fetch()+blob
+                // instead of a direct link. The free-preview call site keeps
+                // calling loadSTL(url) directly below, since those files stay
+                // public and need no session at all.
+                const session = getWalletSession();
+                const headers = session ? { 'Authorization': 'Bearer ' + session.session_id } : {};
+                const resp = await fetch(url, { headers });
+                if (!resp.ok) {
+                    throw new Error(`Could not load ${url} (${resp.status})`);
+                }
+                return resp.blob();
+            }
+
+            async function downloadStl(filename) {
+                try {
+                    const blob = await loadOwnedStl(`/download/stl/${filename}`);
+                    const objUrl = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = objUrl;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    URL.revokeObjectURL(objUrl);
+                } catch (err) {
+                    alert('Download failed: ' + err.message);
+                }
+            }
+
             function loadSTL(url) {
                 const loader = new STLLoader();
                 loader.load(url, function(geometry) {
@@ -1268,7 +1440,7 @@ async def root():
                         };
                         html += '<div class="download-links">';
                         const stlFilename = data.stl_file.split('/').pop();
-                        html += `<a href="/download/stl/${stlFilename}" target="_blank">📥 Download STL (mesh)</a>`;
+                        html += `<button onclick="downloadStl('${stlFilename}')">📥 Download STL (mesh)</button>`;
                         document.querySelectorAll('.fmt-checkbox').forEach(cb => {
                             if (cb.checked) {
                                 const label = formatLabels[cb.value];
@@ -1279,8 +1451,14 @@ async def root():
                         
                         resultDiv.innerHTML = html;
                         
-                        // Load STL in viewer
-                        loadSTL(`/download/stl/${data.stl_file.split('/').pop()}`);
+                        // Load STL in viewer - paid job, needs the wallet
+                        // session's Authorization header now (loadOwnedStl),
+                        // unlike previewFree()'s call above which stays a
+                        // bare loadSTL() since anonymous preview files are
+                        // still public.
+                        loadOwnedStl(`/download/stl/${data.stl_file.split('/').pop()}`)
+                            .then(blob => loadSTL(URL.createObjectURL(blob)))
+                            .catch(err => { resultDiv.innerHTML += `<div class="error"><strong>✗ Viewer failed:</strong> ${err.message}</div>`; });
                         
                     } else {
                         resultDiv.innerHTML = `<div class="error"><strong>✗ Error:</strong> ${data.error}</div>`;
@@ -1388,23 +1566,33 @@ async def generate_cad(
 ):
     """Generate CAD from description. Requires a signed-in wallet
     session (Authorization: Bearer <session_id> - see wallet_auth.py
-    and POST /auth/verify) and spends exactly 1 credit from that
-    wallet's balance (db.consume_credit). No API key, no per-call
-    payment here anymore - top up credits via POST /credits/purchase.
-    This is the only cost for the whole job - see
-    GET /export/{fmt}/{job_id}'s docstring. Rate-limited per IP
-    (RATE_LIMIT_GENERATE, default 20/minute) - each call does real
+    and POST /auth/verify) and spends exactly 1 generation, paid for by
+    whichever mechanism applies first (db.charge_generation): an
+    active subscription's daily allowance or credit pool, falling back
+    to purchased credits. A subscriber who exceeds their daily cap (or,
+    for Starter, their monthly pool) falls back to spending their own
+    purchased credits rather than being hard-blocked until the
+    window/period resets - a deliberate choice, not an oversight: it
+    means a paying subscriber's work never just stops mid-day for lack
+    of an allowance if they're willing to spend a credit, at the cost
+    of the daily cap not being a hard ceiling for wallets that also
+    hold purchased credits. No API key, no per-call payment here
+    anymore - top up credits via POST /credits/purchase, or subscribe
+    via POST /subscribe/checkout. This is the only cost for the whole
+    job - see GET /export/{fmt}/{job_id}'s docstring. Rate-limited per
+    IP (RATE_LIMIT_GENERATE, default 20/minute) - each call does real
     CadQuery/OCCT work.
 
     Only STL is built here (the preview) - STEP/IGES/DXF/PDF are
     deferred to GET /export/{fmt}/{job_id}, built on demand, only for
     formats actually requested, but not billed again."""
-    if not db.consume_credit(wallet["wallet_address"]):
+    charged_pool = db.charge_generation(wallet["wallet_address"])
+    if charged_pool is None:
         raise HTTPException(
             status_code=402,
             detail=(
                 f"Insufficient credits (balance: {db.get_credit_balance(wallet['wallet_address'])}). "
-                "Buy more via POST /credits/purchase."
+                "Buy more via POST /credits/purchase, or subscribe via POST /subscribe/checkout."
             ),
         )
 
@@ -1481,53 +1669,85 @@ async def get_job(job_id: str, wallet: Annotated[dict, Depends(wallet_auth.get_c
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
-@app.get("/download/step/{filename}")
-async def download_step(filename: str):
-    """Download STEP file. `filename` is resolved through
-    file_safety.safe_output_path so a path-traversal attempt (e.g.
-    `..%2F..%2Fetc%2Fpasswd`) gets a clean 400 instead of walking outside
-    the output directory."""
+def _resolve_owned_download(
+    fmt: str, filename: str, wallet: dict | None, media_type: str
+) -> FileResponse:
+    """Shared body for the five GET /download/{fmt}/{filename} routes.
+
+    These used to be open to anyone who had the URL (see git history
+    on file_safety.py - that module only ever guaranteed the path
+    can't escape output_dir, it never checked WHO the file belongs to).
+    For a job's own paid CAD artifacts that's a real gap: a leaked
+    link (browser history, a referrer header, a screen share) handed
+    out permanent, un-revocable access with no session needed at all.
+
+    /preview output is the deliberate exception, not an oversight: it
+    has no wallet to check ownership against in the first place (see
+    web_app.py's preview_cad - user_id is the literal string
+    "anonymous"), and it's free, rate-limited, and regenerable, so
+    there's nothing sensitive to protect there. Every other job's
+    files now require the requesting wallet to match db.find_job_owner
+    - same 404-not-403 pattern GET /export/{fmt}/{job_id} already uses
+    below, so this can't be used to distinguish "wrong owner" from
+    "doesn't exist" either.
+    """
     file_path = safe_output_path(generator.output_dir, filename)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path, media_type="application/step", filename=file_path.name)
+
+    owner = db.find_job_owner(filename)
+    if owner != "anonymous":
+        if wallet is None or owner != wallet["wallet_address"]:
+            raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(file_path, media_type=media_type, filename=file_path.name)
+
+
+@app.get("/download/step/{filename}")
+async def download_step(
+    filename: str,
+    wallet: Annotated[dict | None, Depends(wallet_auth.get_current_wallet_optional)],
+):
+    """Download STEP file. See _resolve_owned_download's docstring for
+    the path-safety (file_safety.safe_output_path) and ownership rules."""
+    return _resolve_owned_download("step", filename, wallet, "application/step")
 
 @app.get("/download/stl/{filename}")
-async def download_stl(filename: str):
-    """Download STL file. See download_step's docstring re: path safety."""
-    file_path = safe_output_path(generator.output_dir, filename)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path, media_type="model/stl", filename=file_path.name)
+async def download_stl(
+    filename: str,
+    wallet: Annotated[dict | None, Depends(wallet_auth.get_current_wallet_optional)],
+):
+    """Download STL file. See _resolve_owned_download's docstring."""
+    return _resolve_owned_download("stl", filename, wallet, "model/stl")
 
 
 @app.get("/download/iges/{filename}")
-async def download_iges(filename: str):
-    """Download IGES file. See download_step's docstring re: path safety."""
-    file_path = safe_output_path(generator.output_dir, filename)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path, media_type="model/iges", filename=file_path.name)
+async def download_iges(
+    filename: str,
+    wallet: Annotated[dict | None, Depends(wallet_auth.get_current_wallet_optional)],
+):
+    """Download IGES file. See _resolve_owned_download's docstring."""
+    return _resolve_owned_download("iges", filename, wallet, "model/iges")
 
 
 @app.get("/download/dxf/{filename}")
-async def download_dxf(filename: str):
+async def download_dxf(
+    filename: str,
+    wallet: Annotated[dict | None, Depends(wallet_auth.get_current_wallet_optional)],
+):
     """Download multi-view orthographic DXF file (front/top/side). See
-    download_step's docstring re: path safety."""
-    file_path = safe_output_path(generator.output_dir, filename)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path, media_type="image/vnd.dxf", filename=file_path.name)
+    _resolve_owned_download's docstring."""
+    return _resolve_owned_download("dxf", filename, wallet, "image/vnd.dxf")
 
 
 @app.get("/download/pdf/{filename}")
-async def download_pdf(filename: str):
+async def download_pdf(
+    filename: str,
+    wallet: Annotated[dict | None, Depends(wallet_auth.get_current_wallet_optional)],
+):
     """Download 1:1 scale vector PDF technical drawing. See
-    download_step's docstring re: path safety."""
-    file_path = safe_output_path(generator.output_dir, filename)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path, media_type="application/pdf", filename=file_path.name)
+    _resolve_owned_download's docstring."""
+    return _resolve_owned_download("pdf", filename, wallet, "application/pdf")
 
 
 @app.get("/healthz", response_model=HealthResponse, tags=["ops"])
