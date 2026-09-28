@@ -45,9 +45,16 @@ import json
 from typing import Any
 
 from fastmcp import FastMCP
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
-from a2mcp.x402 import build_paid_app
+from a2mcp.x402 import PaymentConfigError, build_paid_app
 from cad_generator import CADGenerator
+from logging_config import get_logger
+
+logger = get_logger(__name__)
 
 mcp = FastMCP("NitoCAD")
 generator = CADGenerator()
@@ -392,13 +399,41 @@ class X402Gate:
 # request goes to (see its docstring for why that decision can't move into
 # the SDK).
 _free_app = AcceptFixer(mcp_app)
-_paid_app = build_paid_app(
-    AcceptFixer(mcp_app),
-    resource_description=(
-        "Convert a plain-English mechanical part description into a "
-        "manufacturable .STEP CAD file (with .STL for preview), using "
-        "CadQuery/OpenCASCADE. Returns a download link plus the parsed "
-        "parameters and any validation warnings/auto-corrections."
-    ),
-)
-mcp_app_gated = X402Gate(_free_app, _paid_app)
+try:
+    _paid_app = build_paid_app(
+        AcceptFixer(mcp_app),
+        resource_description=(
+            "Convert a plain-English mechanical part description into a "
+            "manufacturable .STEP CAD file (with .STL for preview), using "
+            "CadQuery/OpenCASCADE. Returns a download link plus the parsed "
+            "parameters and any validation warnings/auto-corrections."
+        ),
+    )
+    mcp_app_gated = X402Gate(_free_app, _paid_app)
+except PaymentConfigError as exc:
+    # OKX credentials aren't configured on this deployment - this used
+    # to crash the ENTIRE backend at startup (web_app.py imports this
+    # module unconditionally), taking down /mcp-bot and every other
+    # BOT-chain route as collateral damage for an OKX-specific feature
+    # nobody had configured yet. Deliberately does NOT fall back to
+    # _free_app either - that would silently serve OKX's paid listing
+    # for free, exactly what build_paid_app's own check exists to
+    # prevent. Instead /mcp now returns a clear 503 explaining why,
+    # and everything else on this backend boots normally.
+    logger.warning(
+        "OKX MCP listing (/mcp) disabled - not crashing the backend for "
+        "it: %s", exc,
+    )
+
+    async def _okx_not_configured(request: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "error": "okx_mcp_not_configured",
+                "detail": str(exc),
+            },
+            status_code=503,
+        )
+
+    mcp_app_gated = Starlette(
+        routes=[Route("/{path:path}", _okx_not_configured, methods=["GET", "POST"])]
+    )

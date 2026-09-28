@@ -8,9 +8,9 @@ part_type+parameters+templateVersion again, and anchorDesign() reverts
 on a duplicate jobId anyway (one anchor per job, not per export click).
 
 Anchoring failure is NEVER allowed to break a paid export - the user
-already paid PER_CALL_PRICE_BOT and is owed their file regardless of
-whether the chain call succeeds. Every failure path here is caught and
-logged, not raised.
+already spent a credit generating this job and is owed their file
+regardless of whether the chain call succeeds. Every failure path here
+is caught and logged, not raised.
 
 Uses settings.ANCHOR_WALLET_PRIVATE_KEY - a wallet the SERVER controls
 and signs with, separate from any user's wallet and separate from
@@ -41,6 +41,22 @@ from config import settings
 from logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# BOT Chain is a Proof-of-Authority chain: its blocks carry an extraData
+# field longer than the 32 bytes stock web3.py expects, which raises
+# ExtraDataLengthError on any call that touches block-header data -
+# including build_transaction()'s own fee estimation, below. See
+# scripts/deploy_design_registry.py's identical note; that script
+# injects this same middleware for the exact same build_transaction()
+# call pattern on the exact same chain, but this module - the one that
+# actually runs on every STEP export, not just once at deploy time -
+# never did. Without it, anchor_design() fails on every call, gets
+# swallowed by the bare except below (by design, so anchoring failures
+# never break a paid export), and shows up nowhere but the logs.
+try:
+    from web3.middleware import ExtraDataToPOAMiddleware as _poa_middleware
+except ImportError:
+    from web3.middleware import geth_poa_middleware as _poa_middleware
 
 REPO_ROOT = Path(__file__).resolve().parent
 ABI_PATH = REPO_ROOT / "contracts" / "DesignRegistry.abi.json"
@@ -89,6 +105,7 @@ def anchor_design(
 
     try:
         w3 = Web3(Web3.HTTPProvider(settings.botchain_rpc_url))
+        w3.middleware_onion.inject(_poa_middleware, layer=0)
         account = w3.eth.account.from_key(settings.ANCHOR_WALLET_PRIVATE_KEY)
         contract = w3.eth.contract(
             address=Web3.to_checksum_address(settings.DESIGN_REGISTRY_ADDRESS), abi=abi

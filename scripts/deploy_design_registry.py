@@ -39,6 +39,19 @@ from pathlib import Path
 from solcx import compile_source, install_solc, set_solc_version
 from web3 import Web3
 
+# BOT Chain's testnet is a Proof-of-Authority chain: its blocks carry an
+# extraData field longer than the 32 bytes stock web3.py expects, which
+# raises ExtraDataLengthError on any call that reads block headers
+# (get_block, build_transaction's fee estimation, etc.) unless this
+# middleware is injected first. web3.py renamed it between major
+# versions (ExtraDataToPOAMiddleware in 6.15+/7.x, geth_poa_middleware
+# before that), and requirements.txt pins no version, so try both
+# rather than assume which one is installed.
+try:
+    from web3.middleware import ExtraDataToPOAMiddleware as _poa_middleware
+except ImportError:
+    from web3.middleware import geth_poa_middleware as _poa_middleware
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRACT_PATH = REPO_ROOT / "contracts" / "DesignRegistry.sol"
 ABI_OUTPUT_PATH = REPO_ROOT / "contracts" / "DesignRegistry.abi.json"
@@ -88,6 +101,7 @@ def main() -> None:
     bytecode = contract_interface["bin"]
 
     w3 = Web3(Web3.HTTPProvider(rpc_url))
+    w3.middleware_onion.inject(_poa_middleware, layer=0)
     if not w3.is_connected():
         sys.exit(f"Could not connect to {rpc_url} - check the RPC URL and network.")
 

@@ -33,6 +33,17 @@ pragma solidity ^0.8.19;
  *      uptime. Contract storage only keeps what's needed for O(1)
  *      on-chain lookups (isAnchored / getDesign): the hash, not the
  *      payload.
+ *
+ *      `submitter` (msg.sender on every anchor) is ALWAYS NitoCAD's
+ *      own server-controlled anchor wallet (see design_registry.py's
+ *      ANCHOR_WALLET_PRIVATE_KEY), never the paying customer's own
+ *      wallet - the customer never signs this transaction, the server
+ *      does, on their behalf, after their export is already paid for.
+ *      NitoCAD anchors the engineering record on-chain on behalf of
+ *      the user; it does not mean the user's own wallet signed the
+ *      provenance transaction. Any product copy referencing this
+ *      contract must preserve that distinction, not imply the
+ *      customer's wallet appears as submitter.
  */
 contract DesignRegistry {
     struct Design {

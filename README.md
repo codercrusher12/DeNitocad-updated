@@ -78,7 +78,8 @@ highlights:
   a traceback into a response body.
 - **Fixed a path-traversal bug** in the `/download/{step,stl}/{filename}`
   routes (`file_safety.py`).
-- **Rate limiting** on `/generate` and `/api/keys/generate` (`slowapi`).
+- **Rate limiting** on `/generate`, `/auth/nonce`, `/auth/verify`, and
+  `/credits/purchase` (`slowapi`).
 - **`/healthz` + `/readyz`** endpoints for container/orchestrator health checks.
 - **A real test suite** (`tests/`) — unit tests for the parser/validator,
   API integration tests, and CadQuery-gated geometry tests covering the
@@ -98,6 +99,12 @@ untouched. Mirrors the architecture already proven in the Stitchfren
 project: plain `sqlite3` (not SQLAlchemy/Postgres - this project's scale
 doesn't need it, generation is a synchronous 1-3s call, not a queued job),
 hashed API keys, R2 object storage with local fallback.
+
+> **The API-key auth described in this section was later fully retired**
+> in favor of wallet sign-in + prepaid credits - see the "BOT Chain"
+> section below for the current system, and `db.py`/`wallet_auth.py`'s
+> module docstrings for why. Left as-is here as a historical record of
+> what was originally built and why, not as current documentation.
 
 New files:
 - **`db.py`** - sqlite3 persistence: `jobs` table (full audit history -
@@ -346,6 +353,297 @@ against PyPI at time of writing — check before relying on them.
 marketplace at `/mcp` happens through OKX's own signup flow — not
 something this repo can do for you.
 
+**Without OKX credentials configured**: `/mcp` returns a `503` with a
+clear `okx_mcp_not_configured` error instead of crashing the whole
+backend at startup. This was a real production incident, not a
+hypothetical — `a2mcp/server.py` used to call `build_paid_app()`
+unconditionally at module import time, and `web_app.py` imports that
+module unconditionally too, so an unconfigured OKX listing took down
+every route on the backend, including the unrelated BOT Chain ones,
+the moment `OKX_API_KEY`/`OKX_SECRET_KEY`/`OKX_PASSPHRASE`/
+`PAY_TO_ADDRESS` were all unset. Fixed by catching `PaymentConfigError`
+at that call site and falling back to a tiny always-503 Starlette app
+for `mcp_app_gated` — deliberately *not* falling back to the free/
+unpaid path, since that would silently serve OKX's paid listing for
+free, exactly what the original check exists to prevent.
+
+## `botchain_pay.py` / `wallet_auth.py` / `a2mcp_botchain/` / `design_registry.py` — BOT Chain
+
+A second, separate payment rail from the OKX listing above. BOT Chain has
+no live native payment protocol yet (AgentPay is still roadmap per BOT
+Chain's own materials), so this is a manual pay-to-treasury,
+prove-it-with-a-tx-hash flow, not an SDK integration like OKX's.
+
+> **This section describes the current system.** It replaced an earlier
+> one (a 5 BOT one-time API key via `POST /api/keys/generate`, then
+> 0.2 BOT per `/generate`/`/export` call, identity = the API key) that
+> has been fully removed - no `security.py`, no `api_keys` table, no
+> conversion path for old keys. See `wallet_auth.py`'s module docstring
+> and `db.py`'s module docstring for what replaced it and why. See
+> `CHANGELOG.md`'s `[3.2.0]` entry for the security-audit fixes,
+> repricing, subscriptions, Google sign-in, and Paystack swap layered
+> on top of this since the version described lower down in this file.
+
+**Identity: wallet sign-in, not API keys** - and, as of `[3.2.0]`, a
+SECOND independent identity path via Google sign-in. `wallet_auth.py`
+implements Sign-In-With-Wallet: `POST /auth/nonce` issues a one-time
+challenge message, the wallet signs it for free (`personal_sign` - no
+gas, nothing on-chain), `POST /auth/verify` checks the signature
+recovers to the claimed address and issues a session (`db.py`'s
+`sessions` table, an opaque token, revocable by deleting the row - not
+a JWT). `POST /auth/google` (`google_auth.py`) is the Google
+counterpart - one step instead of two, a Google ID token already IS the
+proof, no nonce/challenge needed. It's additive, not a replacement:
+Stripe/Paystack-only (no wallet to pay BOT/USDT from), and issues the
+exact same *kind* of session under an identifier shaped like
+`"email:{google_sub}"` instead of a real wallet address - every other
+identity-keyed table (`wallet_credits`, `subscriptions`, `jobs`,
+`sessions` itself) accepts it without any changes, since none of them
+actually validate that string as an Ethereum address, they just treat
+it as an opaque `TEXT` primary key. Every authenticated request sends
+`Authorization: Bearer <session_id>` regardless of which identity path
+issued it; `wallet_auth.get_current_wallet` resolves it back to an
+identity, the same role `security.py`'s `get_current_key` used to play
+for API keys.
+
+**Payment: prepaid credits, or a subscription, not per-call.**
+`POST /generate` spends exactly 1 generation via `db.charge_generation`
+- a wallet with an active subscription draws from that subscription's
+pool/daily-allowance first, falling back to purchased credits, a wallet
+with no subscription just spends a purchased credit
+(`db.consume_credit` - an atomic `UPDATE ... WHERE balance >= ?`,
+tested under real concurrent load in `tests/test_wallet_auth.py`).
+`POST /credits/purchase` tops up purchased credits at one of three
+tiers - `single` (`BOTCHAIN_CREDIT_PRICE_BOT`, 1 credit), `pack_1000`
+(`BOTCHAIN_PACK_1000_PRICE_BOT`, 1000 credits), or `pack_10000`
+(`BOTCHAIN_PACK_10000_PRICE_BOT`, 10000 credits) - verified the same
+way the old per-call payments were (`botchain_pay.verify_and_record_payment`,
+checking the tx is mined, sent to `TREASURY_ADDRESS`, for at least the
+tier's price, from the signed-in wallet itself). The two packs
+intentionally share the same per-credit rate; only `single` pays a
+premium for not committing to volume - see `config.py`'s own comment on
+these three numbers (repriced in `[3.2.0]` from 0.05/5/50 BOT to
+0.01/1/10 BOT once BOT's actual USD price made the original numbers far
+more expensive than intended).
+
+**Subscriptions** (`[3.2.0]`, `paystack_pay.py`, `config.py`'s
+`settings.subscription_tiers`): three tiers, billed in USD via Paystack,
+not on-chain. **Starter** ($5/mo) grants 100 subscription credits per
+billing period - a pool that resets and does NOT roll over - throttled
+to 10 generations per rolling 24 hours so the pool can't be burned
+through in one sitting. **Engineer** ($10/mo) and **Professional**
+($50/mo) have no credit pool at all: generation is simply free, nothing
+deducted from any balance, up to 30 or 150 generations per rolling 24
+hours respectively. "Rolling 24 hours" is deliberate, not a UTC-midnight
+or per-wallet-local-timezone reset - see `db.count_generations_last_24h`'s
+docstring for the tradeoff (no timezone column needed, no reset-cliff,
+at the cost of a `COUNT` query over the `jobs` table rather than an O(1)
+counter). A subscriber who exceeds their daily cap (or, Starter, their
+pool) falls back to spending purchased credits rather than being
+hard-blocked until the window/period resets - an explicit, easy-to-flip
+default. **Team ($500/5 seats) and Enterprise (custom) are not
+built** - a seat/organization model doesn't exist anywhere in this
+app's schema, and Enterprise is normally manual invoicing, neither is a
+config tweak.
+
+Runs on **Paystack**, not Stripe, as of `[3.2.0]` (`stripe_pay.py` and
+its `STRIPE_*` settings are left in place, unused, as a cheap rollback
+path). Mechanically different, not just a relabeling - see
+`paystack_pay.py`'s module docstring for what was verified against
+Paystack's live docs before writing it: no separate webhook secret
+(Paystack signs with the same secret key used for API calls, HMAC-SHA512
+of the raw request body, `x-paystack-signature`), no Checkout Session
+object (`POST /transaction/initialize` with a plan code returns an
+`authorization_url` directly), and a **required real customer email** -
+Paystack has no concept of a wallet, so `POST /subscribe/checkout` takes
+an `email` field and the frontend asks for it at subscribe time; never
+synthesized. The wallet stays the actual identity throughout -
+`subscriptions.provider` distinguishes which rail wrote a row,
+`paystack_customer_code`/`paystack_subscription_code` exist only for
+reconciliation, a webhook resolves back to a wallet via the customer
+code (`db.get_subscription_by_paystack_customer_code`), never by
+re-deriving one from an email. **USD is not assumed enabled** on the
+Paystack account - `PAYSTACK_CURRENCY` must be explicitly `"USD"`,
+confirmed in the Paystack dashboard first, or every subscription route
+refuses to run rather than silently billing NGN amounts equal to the
+USD figures (Paystack does support a USD collections option for a
+Nigerian business, but it's capped at $5,000 lifetime until the account
+completes CAC registration and upgrades past Starter Business - check
+that limit against expected volume before enabling). `current_period_end`
+on a renewal is computed as grant-time + 30 days rather than trusted
+from an unconfirmed webhook field - Paystack's documented payload shape
+for a *renewal* charge (as opposed to the first one) wasn't consistent
+across their own docs and third-party integration guides, and every
+tier here bills monthly, so this is a deliberate approximation, flagged
+in `paystack_pay.py` where it happens, not a silently-wrong assumption.
+
+**Signup bonus**: 10 credits for a wallet, gated on its first verified
+payment (BOT/USDT/Stripe/Paystack) - not on wallet creation, since a
+wallet costs nothing and is unlimited to create, so gating on connection
+alone would have no economic friction and would just be farmed
+(`db.claim_signup_bonus`, one-time via a `PRIMARY KEY` insert). A Google
+account gets 1 credit immediately on first sign-in instead, no payment
+gate - a real Google account has more inherent friction than a free
+Ethereum keypair, and 1 credit is a small enough blast radius even if
+that assumption turns out wrong (`EMAIL_SIGNUP_BONUS_CREDITS`).
+
+**BOT Chain USDT payments remain explicitly blocked** - not "no
+verified address yet," but not to be built at all right now regardless
+of address availability. Do not hardcode a USDT contract address found
+via web search - a wrong ERC20 address here doesn't fail loudly, it
+verifies against a different (or fraudulent) token while real customer
+payments go unrecognized. `config.py`'s `BOTCHAIN_USDT_CONTRACT_ADDRESS`
+stays `None` until someone provides one from BOT Chain's own
+docs/explorer or from ShieldGuard's existing payment config.
+
+**File Exports (the subscription entitlement) remains explicitly
+undefined** - every credit type, purchased or subscription, already
+gets free STEP/IGES/DXF/PDF export after the 1-credit generation spend
+(see the export section below), so the perk has no content until a real
+definition is chosen from: making exports subscriber-only for everyone
+else, a not-yet-defined non-subscriber export cost that subscribers are
+exempt from, or a new not-yet-scoped capability (bulk export, an export
+API, batch formats). Recorded as a named-but-unimplemented entitlement
+on purpose, not silently guessed at. Professional's `advanced_engineering`
+entitlement gets the identical treatment - named, sellable, unimplemented.
+
+`botchain_pay.verify_and_record_payment` checks the tx is mined, sent to
+`TREASURY_ADDRESS`, for at least the required amount — and, wherever an
+existing identity should own the payment (a wallet's own credits, a
+job's wallet), that the tx's *sender* matches too (`expected_sender`).
+That last check exists because of a specific finding from auditing
+ShieldGuard's own `connections.js`/`webhook.js`: without it, anyone
+watching the chain for a qualifying payment to the treasury could spend
+someone else's tx hash against their own call first. Double-spend/replay
+protection is `db.py`'s `payments` table, `tx_hash` as `PRIMARY KEY` —
+`reserve_payment()` runs before any RPC work, so sqlite's own uniqueness
+constraint is the serialization guarantee, not an application lock.
+Paystack's equivalent replay guard is `db.mark_paystack_reference_processed`
+- a transaction `reference` as `PRIMARY KEY`, same reasoning, since
+Paystack redelivers webhooks (a slow response, any non-2xx, their own
+at-least-once guarantee) and a redelivered `charge.success` must not
+grant the same period twice.
+
+**Free tier**: `POST /preview` — no wallet, no session, STL only, hard
+per-IP rate limit (`RATE_LIMIT_PREVIEW`), and deliberately forces the
+fallback parser instead of DeepSeek (a free, unauthenticated route
+calling a paid external LLM API on every request would be a real cost-
+abuse vector). A preview job's `user_id` is `"anonymous"` and can never
+be claimed/upgraded to a paid export later — re-submit the same
+description through the paid flow instead. This avoids the security
+question an upgradeable anonymous job would raise (anyone could try to
+claim any anonymous `job_id`). This is also why `GET /download/{fmt}/{filename}`
+(below) deliberately keeps anonymous-preview files public even after
+`[3.2.0]`'s ownership fix - there's no wallet to check ownership
+against, and nothing sensitive to protect on a free, regenerable file.
+
+**On-demand export split, and it's free**: `/generate` only builds and
+returns STL — STEP/IGES/DXF/PDF are deferred to `GET /export/{fmt}/{job_id}`
+(`cad_generator.export_format_for_job`), rebuilt from the job's stored
+`part_type`/`parameters` (same template + same params ⇒ same geometry) -
+but not billed again. The 1 credit (or subscription allowance) spent at
+generation time covers every format pulled from that job; ownership
+(`job["user_id"] == wallet["wallet_address"]`) is what gates the export,
+not a second payment. (This used to charge per format on top of the
+generation charge - fixed, not discounted - see that endpoint's own
+docstring in `web_app.py`.) This is what makes the free preview tier
+affordable at all — the expensive multi-format export work only happens
+when a format is actually wanted.
+
+**`GET /download/{fmt}/{filename}` is ownership-gated as of `[3.2.0]`** -
+it used to be fully open to anyone with the URL, path-traversal-safe via
+`file_safety.py` but with no check on WHO was asking, unlike
+`GET /export/{fmt}/{job_id}` above. `db.find_job_owner()` resolves a
+filename back to the job that produced it (on-demand exports encode
+`job_id` in the filename directly; `/generate`'s inline STL uses a
+different, non-`job_id` uuid and falls back to a `stl_url`/`step_url`
+table lookup), and `wallet_auth.get_current_wallet_optional()` lets the
+route serve both public preview output and ownership-checked paid
+output through one code path.
+
+**`a2mcp_botchain/server.py`**: a second real MCP server, mounted at
+`/mcp-bot` (not `/mcp` — different payment rail, deliberately not
+shared). Now uses the same wallet-session + credits model as the web
+app: `generate_cad_part(description, session_id)` spends 1 credit, and
+`export_format(job_id, fmt, session_id)` is free (included in the job's
+credit). A caller signs in the same way a browser does - `POST
+/auth/nonce` → sign the message with the wallet's private key (free, no
+gas) → `POST /auth/verify` → use the returned `session_id`. This closed
+the one gap that blocked migrating it earlier: it never had an
+API-key-equivalent identity to fall back on, since the payment
+transaction itself used to *be* the identity proof. A wallet session
+solves that without needing a payment at all - signing a message is
+strictly simpler than sending a transaction, and any caller here
+already holds a private key capable of the latter.
+
+**`contracts/DesignRegistry.sol`**: on-chain design provenance, fires
+once per job on STEP export only (not every format — `anchorDesign`
+reverts on a duplicate `jobId` anyway). Anchors a parameters hash +
+output hash + required template version in contract storage for O(1)
+lookups, but emits the **full parameters JSON only in the event log**,
+not contract storage — deliberate, not a gas-saving shortcut: this
+backend's own filesystem is ephemeral across Railway redeploys (see
+`storage.py`), so if the raw parameters only lived in this repo's sqlite
+db, "reproducibility" would quietly depend on this server staying up
+forever. Event data is cheap and permanently readable from chain
+history, independent of this backend's uptime. `templateVersion` is
+required, not optional — without it, a later template bugfix silently
+breaks reproducibility for every design anchored before the fix.
+Anchoring is fire-and-forget and best-effort: it can never fail or
+block a paid export, since the user already paid for the file
+regardless of whether the chain call succeeds. `submitter` (`msg.sender`
+on every anchor) is ALWAYS this server's own `ANCHOR_WALLET_PRIVATE_KEY`
+wallet, never the paying customer's - the customer never signs this
+transaction, the server does, on their behalf, after their export is
+already paid for. Product copy referencing this contract must preserve
+that distinction: NitoCAD anchors the record on the user's behalf, it
+does not mean the user's own wallet signed the provenance transaction.
+
+**Deploying the registry** (`scripts/deploy_design_registry.py`, run
+once, manually, per chain): compiles the contract with `py-solc-x`
+(`scripts/requirements-deploy.txt` — deliberately *not* in the main
+`requirements.txt`, the running API never needs a Solidity compiler),
+deploys from `DEPLOYER_PRIVATE_KEY`, writes the ABI to
+`contracts/DesignRegistry.abi.json` to commit. The printed address then
+has to be set manually as `DESIGN_REGISTRY_ADDRESS` in Railway's env
+vars — the script has no Railway API access and shouldn't. Ongoing
+anchor calls sign with a *different* env var,
+`ANCHOR_WALLET_PRIVATE_KEY` — a wallet this server itself controls and
+pays gas from, separate from `TREASURY_ADDRESS` (which only ever
+receives, never signs). **`design_registry.py`'s `anchor_design()` was
+missing the PoA middleware the deploy script above already uses** -
+fixed in `[3.2.0]` (see that changelog entry); every anchor call was
+likely failing silently on every export before the fix. Validate with
+`scripts/test_anchor_e2e.py` (two distinct jobs anchored back to back,
+checked against real chain state, not app logs) before trusting this on
+mainnet - written but not yet run against a live chain.
+
+**Not yet verified**: none of this has been run against real
+dependencies or a real chain. No network access in the environment this
+was built in to install `web3`/`fastmcp`/`py-solc-x`/`google-auth`/`httpx`
+or reach BOT Chain's RPC or Paystack's API, so this is syntax-checked and
+structurally reviewed against the real repo files, not executed.
+`DesignRegistry.sol` has not been run through an actual `solc` compile —
+its patterns are matched line-by-line against ShieldGuard's own
+already-deployed `ReceiptRegistry.sol`, which is not the same as
+compiling it. **Nothing is deployed** — no testnet contract, no funded
+treasury or anchor wallet, no end-to-end tested payment, no live
+Paystack or Google OAuth credentials. Test all of this on BOT Chain
+testnet and Paystack test mode before treating any of it as done, and
+before any marketing copy claims "inscribed onchain" as a live feature.
+
+**Known gaps, not fixed**: `frontend/index.html` (the external landing
+page) has its own copy of this same wallet-payment and subscription
+flow, kept manually in sync with `web_app.py`'s embedded demo — there is
+no shared JS module between them, so a future change to one needs the
+same change made to the other by hand; this got MORE duplicated, not
+less, as of `[3.2.0]`'s subscription/Google-sign-in additions. A
+Telegram bot (reusing `botchain_pay`/`cad_generator`/`db` directly,
+manual paste-your-tx-hash flow, no WalletConnect) is planned but not
+built. Mid-cycle subscription plan changes (upgrading/downgrading tier
+before renewal) are explicitly not handled - flagged in
+`paystack_pay.py`, not silently broken.
+
 ## Deployment topology
 
 Two separate deploys (down from three — `a2mcp/`'s migration into the
@@ -355,6 +653,21 @@ main FastAPI process retired the standalone gateway deploy):
 |---|---|---|
 | FastAPI + CadQuery backend (now includes `/mcp` — see above) | Railway, **Docker** builder | CadQuery's OCP dependency needs system libs (`libgl1` etc.) and a pinned Python (3.9-3.12 only) that Railway's default Nixpacks builder has repeatedly failed to honor reliably (see `Dockerfile` comments, sourced from Railway's own help forum). A Dockerfile removes the guesswork. Not Vercel — OCP's wheel stack blows past Vercel's 250MB serverless function limit. |
 | `frontend/index.html` | Vercel / Netlify / GitHub Pages, static, no build step | It's one static file with a configurable API-endpoint box (localStorage), same pattern as Stitchfren's `frontend/`. |
+
+`frontend/` has grown into four static pages, all deployed together
+(same host, same build-free setup as `index.html` above) and cross-
+linked in each other's nav:
+- **`index.html`** — the marketing/landing page, pricing, and the main
+  paid demo (wallet connect, generate, export).
+- **`preview.html`** — the free, no-wallet preview tool on its own page,
+  for iterating on a description before committing to a paid
+  generation. Hands the description off to `index.html#demo` via
+  `localStorage` (client-side convenience only - free previews stay
+  anonymous and unclaimable server-side, same as always).
+- **`profile.html`** — job history and credit balance for the signed-in
+  wallet, reading `GET /api/jobs` and `GET /credits/balance`.
+- **`refine.html`** — the prompt-refinement chat, gated on
+  `BULK_TIER_CREDIT_THRESHOLD` (see `config.py`).
 
 `mcp-gateway/`'s `Dockerfile`/`railway.json` are still in the repo but
 should not be deployed as a live service going forward (see above).
@@ -368,7 +681,8 @@ served at the backend's own `/` (handy for quick same-origin testing —
 no endpoint config needed, works the moment `uvicorn` is running) and
 `frontend/index.html` (the one to actually deploy separately for the
 OKX listing). They're kept in sync manually; if you change one, change
-the other.
+the other. `preview.html`/`profile.html`/`refine.html` have no
+backend-embedded equivalent - they only exist as static pages.
 
 ## DeepSeek Integration (real LLM parsing, added after initial delivery)
 
@@ -467,13 +781,43 @@ version, not the old pinned one that caused the conflict.
 - **IGES** — exact B-rep, legacy mechanical CAD interchange
 - **DXF** — layer-classified 2D section (outline / holes / centerlines) for laser/plasma/waterjet cutting
 - **PDF** — 1:1 scale vector technical drawing with a title block
-- All five produced by default; pass `formats: [...]` in the `/generate` request body to narrow it (e.g. `["step", "stl"]` for the old behavior)
+- All five formats supported, but only STL is built by `/generate` (drives the live preview) — STEP/IGES/DXF/PDF are deferred to `GET /export/{fmt}/{job_id}`, built and paid for individually, only when actually requested. See the BOT Chain section below for why.
 - DXF/PDF come from a single horizontal section — correct for flat/plate/bracket-style parts, not a full multi-view orthographic drawing
 
 ### ✅ Agent-to-Agent / Pay-Per-Call (`a2mcp/`)
 - Real MCP protocol server mounted at `/mcp` on this same backend
 - One tool, `generate_cad_part`, priced per call via OKX's official Payment SDK for the OKX A2MCP marketplace
 - Session bootstrap and tool discovery stay free; only the actual generation call is gated
+
+### ✅ BOT Chain Payments, Free Preview & Provenance (`botchain_pay.py`, `wallet_auth.py`, `a2mcp_botchain/`, `design_registry.py`)
+- Separate payment rail from the OKX listing above — native BOT, verified
+  on-chain directly (no SDK, since BOT Chain has no live native payment
+  protocol yet), not X Layer/OKX's Payment SDK
+- `POST /preview` — free, no wallet, no session, STL-only, rate-limited
+  hard per IP, forces the fallback parser (not DeepSeek) so it can't be
+  used to burn DeepSeek API budget for free
+- `POST /auth/nonce` + `POST /auth/verify` — free wallet sign-in
+  (Sign-In-With-Wallet), issues a session used as `Authorization: Bearer
+  <session_id>` on everything below - no API key, nothing on-chain, no
+  gas, just a signature
+- `POST /credits/purchase` — `single` (`BOTCHAIN_CREDIT_PRICE_BOT`, 1
+  credit), `pack_1000`, or `pack_10000`; tops up the signed-in wallet's
+  balance after verifying the matching on-chain payment
+- `POST /generate` — spends 1 credit from that balance (402 if
+  insufficient), STL only
+- `GET /export/{fmt}/{job_id}` — STEP/IGES/DXF/PDF, built individually
+  on demand but **not billed again** - included in the 1 credit already
+  spent at generation
+- `a2mcp_botchain/server.py` — a second MCP mount at `/mcp-bot`, separate
+  from OKX's `/mcp`, with `generate_cad_part(description, session_id)`
+  (spends 1 credit) and `export_format(job_id, fmt, session_id)` (free) -
+  same wallet-session + credits model as above, see the "BOT Chain"
+  section for how an agent obtains a `session_id`
+- `contracts/DesignRegistry.sol` + `scripts/deploy_design_registry.py` +
+  `design_registry.py` — on-chain design provenance, anchors a params
+  hash + template version (not just a file hash) on STEP export, so a
+  design is independently *reproducible*, not just notarized. **Not yet
+  deployed** — see "Not yet verified" below.
 
 ## Installation
 
@@ -579,8 +923,16 @@ Multi-format Export: STEP, STL, IGES, DXF, PDF (exporters.py)
 3D Preview (Three.js) + R2/local file storage + sqlite3 job history
 ```
 
-Also exposed as an MCP tool (`a2mcp/`, mounted at `/mcp`), payment-gated
-per call via OKX's official Payment SDK for the OKX A2MCP marketplace.
+Only STL comes out of the main generation flow above — STEP/IGES/DXF/PDF
+are built separately, on demand, via `export_format_for_job` in
+`cad_generator.py`, gated by ownership of the job (not a second
+payment - the generation credit/allowance already covers every format).
+See the BOT Chain section below.
+
+Also exposed as two separate MCP mounts: `a2mcp/` at `/mcp` (OKX's
+official Payment SDK, for the OKX A2MCP marketplace) and
+`a2mcp_botchain/` at `/mcp-bot` (native BOT, verified directly on-chain).
+Different payment rails, deliberately not sharing a mount.
 
 ## Validation Examples
 
