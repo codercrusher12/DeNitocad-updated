@@ -1307,6 +1307,29 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
   }
   window.handleSubscribeClick = handleSubscribeClick;
 
+  function showProvenanceBanner(jobId, anchorTx, explorerUrl){
+    // Customer-facing on-chain receipt after STEP export. Shown next to
+    // the demo results so they can open the explorer without digging
+    // through Railway logs.
+    let host = document.getElementById('provenanceBanner');
+    if(!host){
+      host = document.createElement('div');
+      host.id = 'provenanceBanner';
+      host.style.cssText = 'margin-top:16px;padding:14px 16px;border-radius:12px;background:#0E2C52;color:#fff;font-size:.9rem;line-height:1.5;';
+      const results = document.getElementById('results') || document.getElementById('demoResults') || statusEl;
+      if(results && results.parentNode) results.parentNode.insertBefore(host, results.nextSibling);
+      else document.body.appendChild(host);
+    }
+    const shortTx = anchorTx ? (anchorTx.slice(0, 10) + '…' + anchorTx.slice(-6)) : '';
+    host.innerHTML = `
+      <div style="font-family:IBM Plex Mono,monospace;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;opacity:.7;margin-bottom:6px;">On-chain provenance</div>
+      <div style="margin-bottom:8px;">This design was anchored on BOT Chain. Anyone can verify the parameters hash and STEP file hash on the explorer.</div>
+      <div style="font-family:IBM Plex Mono,monospace;font-size:.8rem;word-break:break-all;opacity:.9;margin-bottom:10px;">Tx ${shortTx}</div>
+      <a href="${explorerUrl}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:999px;background:#13A57D;color:#fff;font-weight:600;text-decoration:none;">View on explorer →</a>
+      <span style="margin-left:10px;opacity:.65;font-size:.8rem;">Job ${jobId.slice(0,8)}…</span>
+    `;
+  }
+
   async function downloadFormat(base, fmt, jobId, btn){
     // No payment here - the job's original /generate payment already
     // covers every export format pulled from it. See
@@ -1324,6 +1347,8 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.detail || `Export failed (HTTP ${resp.status}).`);
       }
+      const anchorTx = resp.headers.get('X-NitoCAD-Anchor-Tx');
+      const explorerUrl = resp.headers.get('X-NitoCAD-Explorer-Url');
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1335,6 +1360,14 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+      if (anchorTx && explorerUrl) {
+        showProvenanceBanner(jobId, anchorTx, explorerUrl);
+      } else if (fmt === 'step') {
+        // STEP path is what triggers anchoring; if headers are missing
+        // the env may still be unset - give a gentle status note.
+        statusEl.classList.remove('err');
+        statusEl.textContent = 'STEP downloaded. On-chain anchor will appear once DESIGN_REGISTRY_ADDRESS and the anchor wallet are configured.';
+      }
     } catch (err) {
       alert('Download failed: ' + err.message);
     } finally {

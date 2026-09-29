@@ -440,6 +440,8 @@
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.detail || `Export failed (HTTP ${resp.status}).`);
       }
+      const anchorTx = resp.headers.get('X-NitoCAD-Anchor-Tx');
+      const explorerUrl = resp.headers.get('X-NitoCAD-Explorer-Url');
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -451,6 +453,12 @@
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+      if (anchorTx && explorerUrl) {
+        if (confirm('STEP saved. Open on-chain proof on the explorer?')) {
+          window.open(explorerUrl, '_blank', 'noopener');
+        }
+        loadJobs(base, session);
+      }
     } catch (err) {
       alert('Download failed: ' + err.message);
     } finally {
@@ -499,19 +507,27 @@
           `<button class="btn btn-ghost" onclick="downloadFormat('${base}','${fmt}','${job.id}',event)">↓ ${fmt.toUpperCase()}</button>`
         ).join('')
       : '';
+    let anchorTx = job.anchor_tx || '';
+    if (anchorTx && !anchorTx.startsWith('0x')) anchorTx = '0x' + anchorTx;
+    const explorerBase = (window.__nitocadExplorer || 'https://scan.botchain.ai').replace(/\/$/, '');
+    const provenance = anchorTx
+      ? `<a class="btn btn-primary" href="${explorerBase}/tx/${anchorTx}" target="_blank" rel="noopener" title="${escapeHtml(anchorTx)}">On-chain proof →</a>`
+      : (job.success
+          ? `<span class="job-meta" style="align-self:center;">Export STEP to anchor on-chain</span>`
+          : '');
     return `
       <div class="job-card">
         <div class="job-card-head">
           <div>
             <div class="job-part-type">${escapeHtml(job.part_type || 'part')}</div>
-            <div class="job-meta">${escapeHtml(dateText)}${job.used_deepseek ? ' · DeepSeek' : ''}</div>
+            <div class="job-meta">${escapeHtml(dateText)}${job.used_deepseek ? ' · DeepSeek' : ''}${anchorTx ? ' · anchored' : ''}</div>
           </div>
           ${badge}
         </div>
         <p class="job-desc">${escapeHtml(job.description)}</p>
         ${paramsText ? `<div class="job-params">${escapeHtml(paramsText)}</div>` : ''}
         ${job.error ? `<div class="job-params job-error">${escapeHtml(job.error)}</div>` : ''}
-        <div class="job-actions">${stlLink}${exportButtons}</div>
+        <div class="job-actions">${stlLink}${exportButtons}${provenance}</div>
       </div>
     `;
   }
