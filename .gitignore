@@ -4,3 +4,9 @@ node_modules/
 .tanstack/
 artifacts/
 .env
+node_modules/
+.vercel/
+.grok/
+.tanstack/
+artifacts/
+.env
