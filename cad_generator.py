@@ -319,7 +319,9 @@ class CADGenerator:
             raise GenerationError(f"Failed to build {part_type}: {exc}") from exc
         return workplane
 
-    def export_format_for_job(self, job_id: str, fmt: str) -> tuple[Path, str]:
+    def export_format_for_job(
+        self, job_id: str, fmt: str, anchor: bool = True
+    ) -> tuple[Path, str]:
         """On-demand export: rebuild geometry from a stored job's params
         and export exactly one format. This is the deferred half of what
         /generate used to do inline for every format on every call - see
@@ -353,6 +355,17 @@ class CADGenerator:
             # Cheap same-instance cache. Railway's filesystem is ephemeral
             # across redeploys (see storage.py), so this only helps within
             # one running process, not a durability guarantee.
+            if resolved_fmt == "step" and anchor and not job.get("anchor_tx"):
+                # A cached STEP that never got anchored (first attempt failed
+                # or anchoring wasn't configured yet) must not stay
+                # un-anchored forever just because the file is cached.
+                import json as _json2
+                import design_registry
+                design_registry.anchor_design(
+                    job_id, part_type,
+                    _json2.loads(job["parameters"]) if job["parameters"] else {},
+                    out_path,
+                )
             return out_path, part_type
 
         import json as _json
@@ -370,7 +383,7 @@ class CADGenerator:
         except Exception as exc:  # noqa: BLE001
             raise GenerationError(f"{resolved_fmt.upper()} export failed: {exc}") from exc
 
-        if resolved_fmt == "step":
+        if resolved_fmt == "step" and anchor and not job.get("anchor_tx"):
             # Only STEP, not every format - it's the canonical solid
             # deliverable, and anchorDesign() reverts on a duplicate
             # jobId anyway (one anchor per job, not per export click).

@@ -74,6 +74,17 @@ def _load_abi():
     return _abi_cache
 
 
+def anchoring_available() -> bool:
+    """True only if an anchor call can actually succeed: registry address,
+    anchor wallet key AND the committed ABI file are all present. The UI
+    uses this to say "anchoring isn't enabled" instead of spinning."""
+    return bool(
+        settings.DESIGN_REGISTRY_ADDRESS
+        and settings.ANCHOR_WALLET_PRIVATE_KEY
+        and _load_abi() is not None
+    )
+
+
 def _raw_tx_bytes(signed_tx) -> bytes:
     """See scripts/deploy_design_registry.py's identical shim - web3.py
     renamed this attribute between major versions and requirements.txt

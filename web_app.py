@@ -3,13 +3,15 @@ Enhanced web interface with 3D preview.
 """
 import hashlib
 import hmac
+import json
 import secrets
+import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
@@ -1745,6 +1747,41 @@ def _verify_dl_token(job_id: str, fmt: str, owner: str, token: str) -> bool:
     return hmac.compare_digest(sig, _dl_signature(job_id, fmt, owner, exp))
 
 
+_anchor_lock = threading.Lock()
+_anchoring_jobs: set[str] = set()
+
+
+def _anchor_step_in_background(job_id: str, file_path) -> None:
+    """Runs AFTER the /link response has been sent, so the customer's
+    download starts first and the on-chain anchor follows. Best-effort:
+    design_registry.anchor_design never raises, and a per-job guard stops
+    a double-click from submitting two anchor transactions."""
+    with _anchor_lock:
+        if job_id in _anchoring_jobs:
+            return
+        _anchoring_jobs.add(job_id)
+    try:
+        job = db.get_job(job_id)
+        if not job or job.get("anchor_tx"):
+            return
+        params = json.loads(job["parameters"]) if job.get("parameters") else {}
+        import design_registry
+        design_registry.anchor_design(job_id, job["part_type"], params, file_path)
+    except Exception:  # noqa: BLE001 - never surfaces to the customer
+        logger.exception("background anchor failed", extra={"job_id": job_id})
+    finally:
+        with _anchor_lock:
+            _anchoring_jobs.discard(job_id)
+
+
+def _anchor_enabled() -> bool:
+    try:
+        import design_registry
+        return design_registry.anchoring_available()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _anchor_info(job: dict) -> tuple[str | None, str | None]:
     anchor_tx = job.get("anchor_tx")
     if not anchor_tx:
@@ -1755,7 +1792,7 @@ def _anchor_info(job: dict) -> tuple[str | None, str | None]:
     return str(anchor_tx), f"{explorer}/tx/{anchor_tx}"
 
 
-def _build_export(fmt: str, job_id: str, owner_wallet: str | None):
+def _build_export(fmt: str, job_id: str, owner_wallet: str | None, anchor: bool = True):
     """Shared by every export route: ownership check (skipped when
     owner_wallet is None because a signed token already proved it), build
     one format on demand, return (file_path, job_after)."""
@@ -1763,7 +1800,7 @@ def _build_export(fmt: str, job_id: str, owner_wallet: str | None):
     if job is None or (owner_wallet is not None and job["user_id"] != owner_wallet):
         raise HTTPException(status_code=404, detail="Job not found")
     try:
-        file_path, _part_type = generator.export_format_for_job(job_id, fmt)
+        file_path, _part_type = generator.export_format_for_job(job_id, fmt, anchor=anchor)
     except UnsupportedFormatError as exc:
         raise HTTPException(status_code=422, detail=exc.message) from exc
     except GenerationError as exc:
@@ -1812,6 +1849,7 @@ async def export_link(
     request: Request,
     fmt: str,
     job_id: str,
+    background_tasks: BackgroundTasks,
     wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)],
 ):
     """Authenticated: build the export, then return a short-lived signed
@@ -1819,15 +1857,25 @@ async def export_link(
     needed, so it works as a plain download on iOS Safari / Android
     Chrome). Ownership is checked here; the token binds job + format +
     owner and expires after _DL_LINK_TTL_SECONDS."""
-    file_path, job_after = _build_export(fmt, job_id, wallet["wallet_address"])
+    # anchor=False: build + hand back the download link first; the on-chain
+    # anchor is submitted afterwards as a background task (STEP only).
+    file_path, job_after = _build_export(fmt, job_id, wallet["wallet_address"], anchor=False)
     token = _make_dl_token(job_id, fmt, wallet["wallet_address"])
     anchor_tx, explorer_url = _anchor_info(job_after)
+    anchoring = False
+    if fmt == "step" and not anchor_tx and _anchor_enabled():
+        background_tasks.add_task(_anchor_step_in_background, job_id, file_path)
+        anchoring = True
     return {
         "url": f"/export/{fmt}/{job_id}/file?t={token}",
         "filename": file_path.name,
         "expires_in": _DL_LINK_TTL_SECONDS,
         "anchor_tx": anchor_tx,
         "explorer_url": explorer_url,
+        # True => an anchor tx is being submitted right now; poll
+        # GET /api/jobs/{job_id}/provenance for the tx link.
+        "anchoring": anchoring,
+        "anchor_enabled": _anchor_enabled(),
     }
 
 
@@ -1844,7 +1892,7 @@ async def export_file(request: Request, fmt: str, job_id: str, t: str = ""):
         job_id, fmt, job["user_id"], t
     ):
         raise HTTPException(status_code=404, detail="Link expired or invalid")
-    file_path, _ = _build_export(fmt, job_id, None)
+    file_path, _ = _build_export(fmt, job_id, None, anchor=False)
     media = "application/pdf" if fmt == "pdf" else "application/octet-stream"
     return FileResponse(
         file_path,
@@ -1891,6 +1939,7 @@ async def job_provenance(
         "part_type": job.get("part_type"),
         "parameters": params,
         "anchored": bool(anchor_tx),
+        "anchor_enabled": _anchor_enabled(),
         "anchor_tx": anchor_tx,
         "explorer_tx_url": explorer_tx,
         "registry_address": settings.DESIGN_REGISTRY_ADDRESS,
@@ -1926,7 +1975,17 @@ async def list_jobs(wallet: Annotated[dict, Depends(wallet_auth.get_current_wall
     """Audit history for the signed-in wallet - every job it has run.
     This is also the backend a future profile page reads from; nothing
     more to build here for that beyond the frontend itself."""
-    return db.list_jobs(user_id=wallet["wallet_address"])
+    jobs = db.list_jobs(user_id=wallet["wallet_address"])
+    explorer = settings.botchain_explorer_url.rstrip("/")
+    enabled = _anchor_enabled()
+    for job in jobs:
+        tx = job.get("anchor_tx")
+        if tx and not str(tx).startswith("0x"):
+            tx = "0x" + str(tx)
+        job["anchor_tx"] = tx or None
+        job["anchor_explorer_url"] = f"{explorer}/tx/{tx}" if tx else None
+        job["anchor_enabled"] = enabled
+    return jobs
 
 
 @app.get("/api/jobs/{job_id}")
