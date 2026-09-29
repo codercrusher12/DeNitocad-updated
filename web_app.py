@@ -1,14 +1,19 @@
 """
 Enhanced web interface with 3D preview.
 """
+import hashlib
+import hmac
+import json
+import secrets
+import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -41,6 +46,11 @@ async def lifespan(app: FastAPI):
         "starting nitocad api",
         extra={"environment": settings.ENVIRONMENT, "r2_configured": settings.r2_configured},
     )
+    try:
+        import design_registry
+        design_registry.log_anchoring_status()
+    except Exception:  # noqa: BLE001 - diagnostics must never block startup
+        logger.exception("could not log anchoring status")
     # fastmcp's Streamable HTTP transport needs its own session manager
     # running for the lifetime of the app (this is what makes /mcp actually
     # answer instead of 404) - the plain @app.on_event("startup") hook this
@@ -95,6 +105,14 @@ app.add_middleware(
     allow_origins=settings.cors_origins_list,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Without this a cross-origin frontend (Vercel -> Railway) cannot read
+    # these response headers via fetch(), so filenames / anchor info are
+    # invisible to it even though the browser received them.
+    expose_headers=[
+        "Content-Disposition",
+        "X-NitoCAD-Anchor-Tx",
+        "X-NitoCAD-Explorer-Url",
+    ],
 )
 
 
@@ -202,6 +220,7 @@ class GenerateResponse(BaseModel):
     validation: ValidationInfo | None = None
     error: str | None = None
     error_type: str | None = None
+    provenance: dict[str, Any] | None = None
 
 
 class HealthResponse(BaseModel):
@@ -1104,17 +1123,108 @@ async def root():
                 }
             }
 
+              // ===== Mobile-safe downloads (same helper on every page) =====
+              // Why: fetch()->blob-><a download>->revokeObjectURL() works on desktop but
+              // fails on phones (iOS Safari ignores `download` on blob: URLs, and the
+              // revoke cancels the save; after an await the tap gesture is gone, so
+              // share/download can silently no-op). Fix: the API hands back a short-lived
+              // signed URL served with Content-Disposition: attachment - a plain
+              // navigation every mobile browser can handle - and a "Tap to save" bar
+              // (a fresh, real tap) is shown as a backup on phones / in-app browsers.
+              const NITO_IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+              const NITO_IN_APP = /FBAN|FBAV|Instagram|Twitter|Telegram|MicroMessenger|TikTok|[;] wv[)]/i.test(navigator.userAgent);
+              let _nitoBarTimer = null, _nitoBarRevoke = null;
+
+              function nitoHideSaveBar(){
+                const el = document.getElementById('nitoSaveBar');
+                if (el) el.remove();
+                clearTimeout(_nitoBarTimer);
+                if (_nitoBarRevoke) { const u = _nitoBarRevoke; _nitoBarRevoke = null; setTimeout(() => URL.revokeObjectURL(u), 60000); }
+              }
+
+              function nitoShowSaveBar(url, filename, isBlob){
+                nitoHideSaveBar();
+                const bar = document.createElement('div');
+                bar.id = 'nitoSaveBar';
+                bar.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:99999;background:#111827;color:#fff;border-radius:14px;padding:12px 14px;display:flex;align-items:center;gap:10px;box-shadow:0 8px 30px rgba(0,0,0,.35);font:14px/1.3 system-ui,-apple-system,sans-serif;';
+                const txt = document.createElement('div');
+                txt.style.cssText = 'flex:1;min-width:0;word-break:break-all;';
+                txt.textContent = NITO_IN_APP
+                  ? 'Not saving? Open this page in Safari/Chrome. ' + filename
+                  : (isBlob ? 'Ready: ' : 'Download started. Not saving? ') + filename;
+                const a = document.createElement('a');
+                a.href = url;
+                a.textContent = 'Tap to save';
+                a.setAttribute('download', filename);
+                a.rel = 'noopener';
+                a.style.cssText = 'background:#13A57D;color:#fff;padding:9px 14px;border-radius:999px;font-weight:600;text-decoration:none;white-space:nowrap;';
+                a.addEventListener('click', () => setTimeout(nitoHideSaveBar, 1500));
+                const x = document.createElement('button');
+                x.type = 'button';
+                x.textContent = '\u2715';
+                x.setAttribute('aria-label', 'Dismiss');
+                x.style.cssText = 'background:none;border:0;color:#9ca3af;font-size:18px;padding:4px 6px;';
+                x.addEventListener('click', nitoHideSaveBar);
+                bar.append(txt, a, x);
+                document.body.appendChild(bar);
+                if (isBlob) _nitoBarRevoke = url;
+                _nitoBarTimer = setTimeout(nitoHideSaveBar, isBlob ? 300000 : 25000);
+              }
+
+              // Preferred path: the API returned a signed, short-lived URL that responds
+              // with Content-Disposition: attachment. Navigating to it downloads the file
+              // without leaving the page, on desktop and mobile alike.
+              function nitoDeliver(url, filename){
+                const a = document.createElement('a');
+                a.href = url;
+                a.rel = 'noopener';
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => a.remove(), 1000);
+                if (NITO_IS_MOBILE || NITO_IN_APP) nitoShowSaveBar(url, filename, false);
+              }
+
+              // Fallback for files we only have as a Blob (e.g. an owned STL fetched by
+              // filename). Mobile: Web Share (files) -> else "Tap to save" bar with a
+              // fresh gesture. Desktop: classic <a download> with a DELAYED revoke.
+              async function nitoBlobDownload(blob, filename){
+                if (NITO_IS_MOBILE && navigator.canShare && navigator.share) {
+                  try {
+                    const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
+                    if (navigator.canShare({ files: [file] })) {
+                      await navigator.share({ files: [file], title: filename });
+                      return;
+                    }
+                  } catch (e) {
+                    if (e && e.name === 'AbortError') return;   // user closed the share sheet
+                    // gesture expired / type not shareable -> fall through to the save bar
+                  }
+                }
+                const url = URL.createObjectURL(blob);
+                if (NITO_IS_MOBILE || NITO_IN_APP) { nitoShowSaveBar(url, filename, true); return; }
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 60000);
+              }
+              // ===== end mobile-safe downloads =====
+
             async function downloadFormat(fmt, jobId) {
-                // Can't use a plain <a href>/window.open here - the export
-                // route requires an Authorization: Bearer <session_id>
-                // header (see wallet_auth.get_current_wallet), and neither
-                // of those can set custom headers on a GET. fetch() + blob
-                // is the correct way to download an authenticated file,
-                // not a workaround.
+                // The export route needs an Authorization header, which a
+                // plain <a href> can't send - so: authenticated POST builds
+                // the file and returns a short-lived signed URL, then we
+                // navigate to it (Content-Disposition: attachment). That
+                // is what makes downloads work on phone browsers; the old
+                // fetch()->blob->revokeObjectURL() path only worked on
+                // desktop. See POST /export/{fmt}/{job_id}/link.
                 //
                 // No payment here - the job's original /generate payment
-                // already covers every export format pulled from it. See
-                // /export/{fmt}/{job_id}'s docstring in web_app.py.
+                // already covers every export format pulled from it.
                 const session = getWalletSession();
                 if (!session) { alert('Your wallet session expired - reconnect and regenerate to download.'); return; }
                 const btn = event.target;
@@ -1122,24 +1232,16 @@ async def root():
                 btn.disabled = true;
                 btn.textContent = 'Building...';
                 try {
-                    const resp = await fetch(`/export/${fmt}/${jobId}`, {
+                    const resp = await fetch(`/export/${fmt}/${jobId}/link`, {
+                        method: 'POST',
                         headers: { 'Authorization': 'Bearer ' + session.session_id },
                     });
                     if (!resp.ok) {
                         const err = await resp.json().catch(() => ({}));
                         throw new Error(err.detail || `Export failed (${resp.status})`);
                     }
-                    const blob = await resp.blob();
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    const cd = resp.headers.get('content-disposition') || '';
-                    const match = cd.match(/filename="?([^"]+)"?/);
-                    a.download = match ? match[1] : `${jobId}.${fmt}`;
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    URL.revokeObjectURL(url);
+                    const info = await resp.json();
+                    nitoDeliver(info.url, info.filename || `${jobId}.${fmt}`);
                 } catch (err) {
                     alert('Download failed: ' + err.message);
                 } finally {
@@ -1211,14 +1313,7 @@ async def root():
             async function downloadStl(filename) {
                 try {
                     const blob = await loadOwnedStl(`/download/stl/${filename}`);
-                    const objUrl = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = objUrl;
-                    a.download = filename;
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    URL.revokeObjectURL(objUrl);
+                    await nitoBlobDownload(blob, filename);
                 } catch (err) {
                     alert('Download failed: ' + err.message);
                 }
@@ -1329,7 +1424,7 @@ async def root():
                         let html = renderResultBase(data);
                         html += '<div class="warning"><strong>This is a free STL-only preview.</strong> It isn\'t exportable to STEP/IGES/DXF/PDF later - use "Generate + Pay in BOT" above with the same description for a version you can export.</div>';
                         resultDiv.innerHTML = html;
-                        loadSTL(`/download/stl/${data.stl_file.split('/').pop()}`);
+                        loadSTL(data.job_id ? `/download/job/${data.job_id}/stl` : `/download/stl/${data.stl_file.split('/').pop()}`);
                     } else {
                         resultDiv.innerHTML = `<div class="error"><strong>✗ Error:</strong> ${data.error}</div>`;
                     }
@@ -1446,7 +1541,9 @@ async def root():
                         };
                         html += '<div class="download-links">';
                         const stlFilename = data.stl_file.split('/').pop();
-                        html += `<button onclick="downloadStl('${stlFilename}')">📥 Download STL (mesh)</button>`;
+                        html += data.job_id
+                            ? `<button onclick="downloadFormat('stl','${data.job_id}')">📥 Download STL (mesh)</button>`
+                            : `<button onclick="downloadStl('${stlFilename}')">📥 Download STL (mesh)</button>`;
                         document.querySelectorAll('.fmt-checkbox').forEach(cb => {
                             if (cb.checked) {
                                 const label = formatLabels[cb.value];
@@ -1462,7 +1559,7 @@ async def root():
                         // unlike previewFree()'s call above which stays a
                         // bare loadSTL() since anonymous preview files are
                         // still public.
-                        loadOwnedStl(`/download/stl/${data.stl_file.split('/').pop()}`)
+                        loadOwnedStl(data.job_id ? `/download/job/${data.job_id}/stl` : `/download/stl/${data.stl_file.split('/').pop()}`)
                             .then(blob => loadSTL(URL.createObjectURL(blob)))
                             .catch(err => { resultDiv.innerHTML += `<div class="error"><strong>✗ Viewer failed:</strong> ${err.message}</div>`; });
                         
@@ -1610,7 +1707,124 @@ async def generate_cad(
         user_id=wallet["wallet_address"],
         formats=["stl"],
     )
+    if not result.get("success"):
+        # Nothing was delivered, so nothing is charged.
+        try:
+            db.refund_generation(wallet["wallet_address"], charged_pool)
+            result["error"] = (result.get("error") or "Generation failed") + " You were not charged."
+        except Exception:  # noqa: BLE001 - never mask the real error with a refund problem
+            logger.exception("refund failed", extra={"pool": charged_pool})
     return result
+
+
+_EXPORT_MEDIA_TYPES = {
+    "step": "application/step", "stl": "model/stl", "iges": "model/iges",
+    "dxf": "image/vnd.dxf", "pdf": "application/pdf",
+}
+
+# Phones (iOS Safari especially) save attachments reliably when the response
+# is a plain navigation with Content-Disposition: attachment, and struggle
+# with fetch()->blob-><a download>. But the export route needs an
+# Authorization header, which a navigation can't send. So the frontend calls
+# POST /export/{fmt}/{job_id}/link (authenticated) and gets back a short-lived
+# HMAC-signed URL for GET /export/{fmt}/{job_id}/file, which it simply opens.
+_DL_LINK_TTL_SECONDS = 300
+# Set DOWNLOAD_LINK_SECRET in the environment if you run more than one
+# process/replica (or want links to survive a restart); otherwise a random
+# per-process key is used, which is fine for a single Railway instance since
+# links only live 5 minutes.
+_DL_LINK_SECRET = (
+    (getattr(settings, "DOWNLOAD_LINK_SECRET", None) or "").encode()
+    or secrets.token_bytes(32)
+)
+
+
+def _dl_signature(job_id: str, fmt: str, owner: str, exp: int) -> str:
+    msg = f"{job_id}|{fmt}|{owner}|{exp}".encode()
+    return hmac.new(_DL_LINK_SECRET, msg, hashlib.sha256).hexdigest()
+
+
+def _make_dl_token(job_id: str, fmt: str, owner: str) -> str:
+    exp = int(time.time()) + _DL_LINK_TTL_SECONDS
+    return f"{exp}.{_dl_signature(job_id, fmt, owner, exp)}"
+
+
+def _verify_dl_token(job_id: str, fmt: str, owner: str, token: str) -> bool:
+    try:
+        exp_s, sig = token.split(".", 1)
+        exp = int(exp_s)
+    except (ValueError, AttributeError):
+        return False
+    if exp < int(time.time()):
+        return False
+    return hmac.compare_digest(sig, _dl_signature(job_id, fmt, owner, exp))
+
+
+_anchor_lock = threading.Lock()
+_anchoring_jobs: set[str] = set()
+
+
+def _anchor_step_in_background(job_id: str, file_path) -> None:
+    """Runs AFTER the /link response has been sent, so the customer's
+    download starts first and the on-chain anchor follows. Best-effort:
+    design_registry.anchor_design never raises, and a per-job guard stops
+    a double-click from submitting two anchor transactions."""
+    with _anchor_lock:
+        if job_id in _anchoring_jobs:
+            return
+        _anchoring_jobs.add(job_id)
+    try:
+        job = db.get_job(job_id)
+        if not job or job.get("anchor_tx"):
+            return
+        params = json.loads(job["parameters"]) if job.get("parameters") else {}
+        import design_registry
+        design_registry.anchor_design(
+            job_id,
+            job["part_type"],
+            params,
+            file_path,
+        )
+    except Exception:  # noqa: BLE001 - never surfaces to the customer
+        logger.exception("background anchor failed", extra={"job_id": job_id})
+    finally:
+        with _anchor_lock:
+            _anchoring_jobs.discard(job_id)
+
+
+def _anchor_enabled() -> bool:
+    try:
+        import design_registry
+        return design_registry.anchoring_available()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _anchor_info(job: dict) -> tuple[str | None, str | None]:
+    anchor_tx = job.get("anchor_tx")
+    if not anchor_tx:
+        return None, None
+    if not str(anchor_tx).startswith("0x"):
+        anchor_tx = "0x" + str(anchor_tx)
+    explorer = settings.botchain_explorer_url.rstrip("/")
+    return str(anchor_tx), f"{explorer}/tx/{anchor_tx}"
+
+
+def _build_export(fmt: str, job_id: str, owner_wallet: str | None, anchor: bool = True):
+    """Shared by every export route: ownership check (skipped when
+    owner_wallet is None because a signed token already proved it), build
+    one format on demand, return (file_path, job_after)."""
+    job = db.get_job(job_id)
+    if job is None or (owner_wallet is not None and job["user_id"] != owner_wallet):
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        file_path, _part_type = generator.export_format_for_job(job_id, fmt, anchor=anchor)
+    except UnsupportedFormatError as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from exc
+    except GenerationError as exc:
+        raise HTTPException(status_code=500, detail=exc.message) from exc
+    # Re-read so a freshly written anchor_tx (STEP path only) is visible.
+    return file_path, (db.get_job(job_id) or job)
 
 
 @app.get("/export/{fmt}/{job_id}")
@@ -1628,29 +1842,155 @@ async def export_on_demand(
     POST /generate time already covers this job in full, including
     every export format pulled from it - a job isn't billed per
     format, it's billed once, at generation. Ownership is enough to
-    gate this: `job["user_id"] != wallet["wallet_address"]` below
-    already proves the caller is the same wallet that spent the credit
-    to create the job, so charging again would just be double-billing
-    work already paid for once. (This used to require its own tx_hash
-    and re-charge BOTCHAIN_PER_CALL_PRICE_BOT per format - that was the
-    bug reported as "charged 0.2 BOT per format on top of the 0.2 BOT
-    generation charge, for one job." Fixed here, not by discounting
-    anything.)"""
+    gate this. (This used to re-charge per format on top of the
+    generation charge - that was the reported "double charge" bug.)
+
+    Kept for API/agent callers that can send an Authorization header.
+    Browsers - especially phones - should use POST .../link instead."""
+    file_path, job_after = _build_export(fmt, job_id, wallet["wallet_address"])
+    headers = {}
+    anchor_tx, explorer_url = _anchor_info(job_after)
+    if anchor_tx:
+        headers["X-NitoCAD-Anchor-Tx"] = anchor_tx
+        headers["X-NitoCAD-Explorer-Url"] = explorer_url
+    return FileResponse(
+        file_path,
+        media_type=_EXPORT_MEDIA_TYPES.get(fmt, "application/octet-stream"),
+        filename=file_path.name,  # => Content-Disposition: attachment
+        headers=headers,
+    )
+
+
+@app.post("/export/{fmt}/{job_id}/link")
+@limiter.limit(settings.RATE_LIMIT_GENERATE)
+async def export_link(
+    request: Request,
+    fmt: str,
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)],
+):
+    """Authenticated: build the export, then return a short-lived signed
+    URL the browser can simply navigate to (no Authorization header
+    needed, so it works as a plain download on iOS Safari / Android
+    Chrome). Ownership is checked here; the token binds job + format +
+    owner and expires after _DL_LINK_TTL_SECONDS."""
+    # anchor=False: build + hand back the download link first; the on-chain
+    # anchor is submitted afterwards as a background task (STEP only).
+    file_path, job_after = _build_export(fmt, job_id, wallet["wallet_address"], anchor=False)
+    token = _make_dl_token(job_id, fmt, wallet["wallet_address"])
+    anchor_tx, explorer_url = _anchor_info(job_after)
+    anchoring = False
+    if fmt == "step" and not anchor_tx and _anchor_enabled():
+        background_tasks.add_task(_anchor_step_in_background, job_id, file_path)
+        anchoring = True
+    return {
+        "url": f"/export/{fmt}/{job_id}/file?t={token}",
+        "filename": file_path.name,
+        "expires_in": _DL_LINK_TTL_SECONDS,
+        "anchor_tx": anchor_tx,
+        "explorer_url": explorer_url,
+        # True => an anchor tx is being submitted right now; poll
+        # GET /api/jobs/{job_id}/provenance for the tx link.
+        "anchoring": anchoring,
+        "anchor_enabled": _anchor_enabled(),
+    }
+
+
+@app.get("/export/{fmt}/{job_id}/file")
+@limiter.limit(settings.RATE_LIMIT_GENERATE)
+async def export_file(request: Request, fmt: str, job_id: str, t: str = ""):
+    """Serve a file for a valid signed token from POST .../link. Always
+    Content-Disposition: attachment, generic binary type so mobile
+    browsers download instead of trying to render STEP/DXF inline."""
+    job = db.get_job(job_id)
+    # 404 (not 401/403) for every failure, same as the other export routes,
+    # so this can't be used to probe which job ids exist.
+    if job is None or fmt not in _EXPORT_MEDIA_TYPES or not _verify_dl_token(
+        job_id, fmt, job["user_id"], t
+    ):
+        raise HTTPException(status_code=404, detail="Link expired or invalid")
+    file_path, _ = _build_export(fmt, job_id, None, anchor=False)
+    media = "application/pdf" if fmt == "pdf" else "application/octet-stream"
+    return FileResponse(
+        file_path,
+        media_type=media,
+        filename=file_path.name,
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@app.get("/api/jobs/{job_id}/provenance")
+async def job_provenance(
+    job_id: str,
+    wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)],
+):
+    """Customer-facing on-chain proof for one job.
+
+    Returns the DesignRegistry anchor transaction (if STEP was exported
+    and anchoring succeeded), plus a direct explorer URL and the
+    parameters that were hashed on-chain. Wallet/email session must own
+    the job - same gate as GET /api/jobs/{job_id}.
+    """
     job = db.get_job(job_id)
     if job is None or job["user_id"] != wallet["wallet_address"]:
         raise HTTPException(status_code=404, detail="Job not found")
-    try:
-        file_path, _part_type = generator.export_format_for_job(job_id, fmt)
-    except UnsupportedFormatError as exc:
-        raise HTTPException(status_code=422, detail=exc.message) from exc
-    except GenerationError as exc:
-        raise HTTPException(status_code=500, detail=exc.message) from exc
 
-    media_types = {
-        "step": "application/step", "stl": "model/stl", "iges": "model/iges",
-        "dxf": "image/vnd.dxf", "pdf": "application/pdf",
+    anchor_tx = job.get("anchor_tx")
+    explorer = settings.botchain_explorer_url.rstrip("/")
+    explorer_tx = None
+    if anchor_tx:
+        if not str(anchor_tx).startswith("0x"):
+            anchor_tx = "0x" + str(anchor_tx)
+        explorer_tx = f"{explorer}/tx/{anchor_tx}"
+
+    params = job.get("parameters")
+    if isinstance(params, str):
+        try:
+            import json as _json
+            params = _json.loads(params)
+        except Exception:
+            pass
+
+    return {
+        "job_id": job_id,
+        "part_type": job.get("part_type"),
+        "parameters": params,
+        "parser": job.get("parser"),
+        "parser_model": job.get("parser_model"),
+        "prompt_version": job.get("prompt_version"),
+        "retry_count": job.get("retry_count", 0),
+        "parse_hash": job.get("parse_hash"),
+        "anchored": bool(anchor_tx),
+        "anchor_enabled": _anchor_enabled(),
+        "anchor_tx": anchor_tx,
+        "explorer_tx_url": explorer_tx,
+        "registry_address": settings.DESIGN_REGISTRY_ADDRESS,
+        "explorer_registry_url": (
+            f"{explorer}/address/{settings.DESIGN_REGISTRY_ADDRESS}"
+            if settings.DESIGN_REGISTRY_ADDRESS
+            else None
+        ),
+        "chain": {
+            "name": (
+                "BOT Chain Testnet"
+                if settings.BOTCHAIN_ENVIRONMENT == "testnet"
+                else "BOT Chain"
+            ),
+            "chain_id_hex": settings.botchain_chain_id_hex,
+            "explorer_url": explorer,
+        },
+        "note": (
+            "On-chain provenance is written when you export STEP for a paid job. "
+            "The record includes part type, parameter hash, template version, "
+            "and keccak256 of the STEP file. Full parameters are in the event log."
+            if anchor_tx
+            else (
+                "Not anchored yet. Generate a paid job, then export STEP. "
+                "Free STL preview never writes on-chain."
+            )
+        ),
     }
-    return FileResponse(file_path, media_type=media_types[fmt], filename=file_path.name)
 
 
 @app.get("/api/jobs")
@@ -1658,7 +1998,17 @@ async def list_jobs(wallet: Annotated[dict, Depends(wallet_auth.get_current_wall
     """Audit history for the signed-in wallet - every job it has run.
     This is also the backend a future profile page reads from; nothing
     more to build here for that beyond the frontend itself."""
-    return db.list_jobs(user_id=wallet["wallet_address"])
+    jobs = db.list_jobs(user_id=wallet["wallet_address"])
+    explorer = settings.botchain_explorer_url.rstrip("/")
+    enabled = _anchor_enabled()
+    for job in jobs:
+        tx = job.get("anchor_tx")
+        if tx and not str(tx).startswith("0x"):
+            tx = "0x" + str(tx)
+        job["anchor_tx"] = tx or None
+        job["anchor_explorer_url"] = f"{explorer}/tx/{tx}" if tx else None
+        job["anchor_enabled"] = enabled
+    return jobs
 
 
 @app.get("/api/jobs/{job_id}")
@@ -1675,9 +2025,58 @@ async def get_job(job_id: str, wallet: Annotated[dict, Depends(wallet_auth.get_c
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
+def _stream_from_url(url: str, media_type: str, filename: str) -> StreamingResponse:
+    """Proxy a remote object (typically an R2 presigned URL) through this
+    API so the browser never has to talk to R2 directly.
+
+    R2 buckets shared with other projects often lack a CORS rule for this
+    frontend origin. THREE.STLLoader fetches via XHR, which is subject to
+    CORS, so a direct load of the R2 URL fails even though a plain <a href>
+    download of the same URL works. Streaming through this backend (which
+    already allows CORS_ORIGINS=*) fixes the 3D preview without requiring
+    bucket-level CORS changes.
+    """
+    import httpx
+
+    try:
+        client = httpx.Client(timeout=60.0, follow_redirects=True)
+        upstream = client.send(
+            client.build_request("GET", url), stream=True
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502, detail=f"Upstream fetch failed: {exc}"
+        ) from exc
+
+    if upstream.status_code != 200:
+        upstream.close()
+        client.close()
+        raise HTTPException(
+            status_code=404,
+            detail=f"Remote file unavailable (HTTP {upstream.status_code})",
+        )
+
+    def iter_bytes():
+        try:
+            for chunk in upstream.iter_bytes():
+                yield chunk
+        finally:
+            upstream.close()
+            client.close()
+
+    return StreamingResponse(
+        iter_bytes(),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, max-age=300",
+        },
+    )
+
+
 def _resolve_owned_download(
     fmt: str, filename: str, wallet: dict | None, media_type: str
-) -> FileResponse:
+):
     """Shared body for the five GET /download/{fmt}/{filename} routes.
 
     These used to be open to anyone who had the URL (see git history
@@ -1696,17 +2095,83 @@ def _resolve_owned_download(
     - same 404-not-403 pattern GET /export/{fmt}/{job_id} already uses
     below, so this can't be used to distinguish "wrong owner" from
     "doesn't exist" either.
+
+    When the local file is gone (Railway ephemeral disk after restart,
+    or multi-replica where the generating instance is not the one
+    serving the download) but the job still has a durable R2 URL, we
+    proxy that URL so the 3D viewer keeps working.
     """
     file_path = safe_output_path(generator.output_dir, filename)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-
     owner = db.find_job_owner(filename)
+
+    if file_path.exists():
+        if owner is not None and owner != "anonymous":
+            if wallet is None or owner != wallet["wallet_address"]:
+                raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(file_path, media_type=media_type, filename=file_path.name)
+
+    # Local miss → try R2 via the job record. find_job_by_local_filename
+    # matches the local stem against jobs.parameters / stored URLs.
+    remote_url = db.find_remote_url_for_filename(filename, fmt)
+    if remote_url and remote_url.startswith("http"):
+        if owner is not None and owner != "anonymous":
+            if wallet is None or owner != wallet["wallet_address"]:
+                raise HTTPException(status_code=404, detail="File not found")
+        return _stream_from_url(remote_url, media_type, filename)
+
+    raise HTTPException(status_code=404, detail="File not found")
+
+
+@app.get("/download/job/{job_id}/{fmt}")
+async def download_job_format(
+    job_id: str,
+    fmt: str,
+    wallet: Annotated[dict | None, Depends(wallet_auth.get_current_wallet_optional)],
+):
+    """Serve a job's CAD artifact by job_id.
+
+    Prefer local disk; fall back to proxying the durable R2 URL stored on
+    the job row. Used by the 3D preview viewer so it never has to fetch
+    R2 cross-origin (R2 CORS is not configured for this frontend).
+    """
+    media_types = {
+        "step": "application/step",
+        "stl": "model/stl",
+        "iges": "model/iges",
+        "dxf": "image/vnd.dxf",
+        "pdf": "application/pdf",
+    }
+    if fmt not in media_types:
+        raise HTTPException(status_code=422, detail=f"Unsupported format: {fmt}")
+
+    job = db.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    owner = job.get("user_id") or "anonymous"
     if owner != "anonymous":
         if wallet is None or owner != wallet["wallet_address"]:
-            raise HTTPException(status_code=404, detail="File not found")
+            raise HTTPException(status_code=404, detail="Job not found")
 
-    return FileResponse(file_path, media_type=media_type, filename=file_path.name)
+    # Prefer durable R2 URL on the job row (local disk is ephemeral on Railway).
+    url_col = f"{fmt}_url"
+    remote_url = job.get(url_col)
+
+    if remote_url:
+        if remote_url.startswith("/download/"):
+            # Local-only fallback path stored when R2 wasn't configured
+            filename = remote_url.rstrip("/").split("/")[-1]
+            file_path = safe_output_path(generator.output_dir, filename)
+            if file_path.exists():
+                return FileResponse(
+                    file_path, media_type=media_types[fmt], filename=file_path.name
+                )
+            raise HTTPException(status_code=404, detail="File not found")
+        if remote_url.startswith("http"):
+            filename = remote_url.split("?")[0].rstrip("/").split("/")[-1] or f"{job_id}.{fmt}"
+            return _stream_from_url(remote_url, media_types[fmt], filename)
+
+    raise HTTPException(status_code=404, detail="File not found")
 
 
 @app.get("/download/step/{filename}")

@@ -173,6 +173,29 @@
     overflow-wrap:break-word;
   }
   .job-error{color:var(--orange-deep);}
+
+  /* Parser provenance card - shows what actually parsed the request */
+  .prov-card{margin-top:12px;padding:10px 14px;border-radius:10px;border:1px solid var(--line);background:var(--fog);font-size:.82rem;}
+  .prov-card.ok{background:rgba(19,165,125,.07);border-color:rgba(19,165,125,.25);}
+  .prov-card.warn{background:rgba(211,84,31,.07);border-color:rgba(211,84,31,.28);}
+  .prov-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+  .prov-pill{font-family:'IBM Plex Mono',monospace;font-size:.68rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:999px;background:#fff;border:1px solid var(--line);}
+  .prov-card.ok .prov-pill{color:var(--botchain-bright-deep);}
+  .prov-card.warn .prov-pill{color:var(--orange-deep);}
+  .prov-note{color:var(--ink-soft);}
+  .prov-meta{font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:var(--ink-soft);margin-top:6px;overflow-wrap:anywhere;}
+  .job-anchor{
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    margin-top:16px;padding:12px 14px;border-radius:12px;
+    background:rgba(19,165,125,.07);border:1px solid rgba(19,165,125,.25);
+    font-size:.85rem;
+  }
+  .job-anchor.pending{background:rgba(11,37,69,.04);border-color:var(--line);}
+  .job-anchor.idle{background:transparent;border-style:dashed;border-color:var(--line);color:var(--ink-soft);}
+  .job-anchor-main{flex:1;min-width:0;}
+  .job-anchor-title{font-weight:600;}
+  .job-anchor-tx{font-family:'IBM Plex Mono',monospace;font-size:.74rem;color:var(--ink-soft);word-break:break-all;margin-top:2px;}
+  .job-anchor .btn{padding:7px 15px;font-size:.76rem;white-space:nowrap;}
   .job-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;}
   .job-actions .btn{padding:7px 15px;font-size:.76rem;}
 
@@ -426,31 +449,132 @@
     return data.balance;
   }
 
+  // ===== Mobile-safe downloads (same helper on every page) =====
+  // Why: fetch()->blob-><a download>->revokeObjectURL() works on desktop but
+  // fails on phones (iOS Safari ignores `download` on blob: URLs, and the
+  // revoke cancels the save; after an await the tap gesture is gone, so
+  // share/download can silently no-op). Fix: the API hands back a short-lived
+  // signed URL served with Content-Disposition: attachment - a plain
+  // navigation every mobile browser can handle - and a "Tap to save" bar
+  // (a fresh, real tap) is shown as a backup on phones / in-app browsers.
+  const NITO_IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const NITO_IN_APP = /FBAN|FBAV|Instagram|Twitter|Telegram|MicroMessenger|TikTok|[;] wv[)]/i.test(navigator.userAgent);
+  let _nitoBarTimer = null, _nitoBarRevoke = null;
+
+  function nitoHideSaveBar(){
+    const el = document.getElementById('nitoSaveBar');
+    if (el) el.remove();
+    clearTimeout(_nitoBarTimer);
+    if (_nitoBarRevoke) { const u = _nitoBarRevoke; _nitoBarRevoke = null; setTimeout(() => URL.revokeObjectURL(u), 60000); }
+  }
+
+  function nitoShowSaveBar(url, filename, isBlob){
+    nitoHideSaveBar();
+    const bar = document.createElement('div');
+    bar.id = 'nitoSaveBar';
+    bar.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:99999;background:#111827;color:#fff;border-radius:14px;padding:12px 14px;display:flex;align-items:center;gap:10px;box-shadow:0 8px 30px rgba(0,0,0,.35);font:14px/1.3 system-ui,-apple-system,sans-serif;';
+    const txt = document.createElement('div');
+    txt.style.cssText = 'flex:1;min-width:0;word-break:break-all;';
+    txt.textContent = NITO_IN_APP
+      ? 'Not saving? Open this page in Safari/Chrome. ' + filename
+      : (isBlob ? 'Ready: ' : 'Download started. Not saving? ') + filename;
+    const a = document.createElement('a');
+    a.href = url;
+    a.textContent = 'Tap to save';
+    a.setAttribute('download', filename);
+    a.rel = 'noopener';
+    a.style.cssText = 'background:#13A57D;color:#fff;padding:9px 14px;border-radius:999px;font-weight:600;text-decoration:none;white-space:nowrap;';
+    a.addEventListener('click', () => setTimeout(nitoHideSaveBar, 1500));
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.textContent = '\u2715';
+    x.setAttribute('aria-label', 'Dismiss');
+    x.style.cssText = 'background:none;border:0;color:#9ca3af;font-size:18px;padding:4px 6px;';
+    x.addEventListener('click', nitoHideSaveBar);
+    bar.append(txt, a, x);
+    document.body.appendChild(bar);
+    if (isBlob) _nitoBarRevoke = url;
+    _nitoBarTimer = setTimeout(nitoHideSaveBar, isBlob ? 300000 : 25000);
+  }
+
+  // Preferred path: the API returned a signed, short-lived URL that responds
+  // with Content-Disposition: attachment. Navigating to it downloads the file
+  // without leaving the page, on desktop and mobile alike.
+  function nitoDeliver(url, filename){
+    const a = document.createElement('a');
+    a.href = url;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => a.remove(), 1000);
+    if (NITO_IS_MOBILE || NITO_IN_APP) nitoShowSaveBar(url, filename, false);
+  }
+
+  // Fallback for files we only have as a Blob (e.g. an owned STL fetched by
+  // filename). Mobile: Web Share (files) -> else "Tap to save" bar with a
+  // fresh gesture. Desktop: classic <a download> with a DELAYED revoke.
+  async function nitoBlobDownload(blob, filename){
+    if (NITO_IS_MOBILE && navigator.canShare && navigator.share) {
+      try {
+        const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: filename });
+          return;
+        }
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;   // user closed the share sheet
+        // gesture expired / type not shareable -> fall through to the save bar
+      }
+    }
+    const url = URL.createObjectURL(blob);
+    if (NITO_IS_MOBILE || NITO_IN_APP) { nitoShowSaveBar(url, filename, true); return; }
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+  // ===== end mobile-safe downloads =====
+
   async function downloadFormat(base, fmt, jobId, btn){
+    // No payment here - the job's original /generate payment already
+    // covers every export format pulled from it. See
+    // /export/{fmt}/{job_id}'s docstring in web_app.py.
     const session = getWalletSession(base);
     if(!session){ alert('Your wallet session expired - reconnect to download.'); return; }
     const originalText = btn.textContent;
     btn.disabled = true;
     btn.textContent = 'Building...';
     try {
-      const resp = await fetch(`${base}/export/${fmt}/${jobId}`, {
+      // 1) authenticated call builds the file and returns a short-lived
+      //    signed URL (see POST /export/{fmt}/{job_id}/link in web_app.py)
+      const resp = await fetch(`${base}/export/${fmt}/${jobId}/link`, {
+        method: 'POST',
         headers: { 'Authorization': 'Bearer ' + session.session_id },
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.detail || `Export failed (HTTP ${resp.status}).`);
       }
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const cd = resp.headers.get('content-disposition') || '';
-      const match = cd.match(/filename="?([^"]+)"?/);
-      a.download = match ? match[1] : `${jobId}.${fmt}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      const info = await resp.json();
+      // 2) plain navigation to an attachment URL - works on phones
+      nitoDeliver(base + info.url, info.filename || `${jobId}.${fmt}`);
+      // 3) THEN the on-chain anchor (STEP only): the server submits it after
+      //    this response, and the tx link appears under the project.
+      if (fmt === 'step') {
+        if (info.anchor_tx) {
+          setAnchorState(jobId, 'done', info.anchor_tx, info.explorer_url);
+        } else if (info.anchoring) {
+          setAnchorState(jobId, 'pending');
+          pollAnchor(base, session, jobId);
+        } else if (info.anchor_enabled === false) {
+          setAnchorState(jobId, 'off');
+        }
+      }
     } catch (err) {
       alert('Download failed: ' + err.message);
     } finally {
@@ -475,10 +599,99 @@
   const jobListEl = document.getElementById('jobList');
   const emptyStateEl = document.getElementById('emptyState');
 
+
+  // Parser provenance card. `p` = {parser, model, prompt_version, retry_count,
+  // parse_hash}; `failed` marks a rejected/failed job. Legacy jobs (created
+  // before provenance was tracked) have no parser: fall back to used_deepseek.
+  function provenanceCardHtml(p, failed, legacyDeepseek){
+    const esc = s => { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; };
+    p = p || {};
+    let tone = '', pill, note;
+    if (p.parser === 'deepseek') {
+      tone = failed ? 'warn' : 'ok';
+      pill = failed ? 'AI parse rejected' : 'AI parse';
+      note = failed ? 'Did not pass the geometry checks'
+           : (p.retry_count ? 'Corrected after ' + p.retry_count + ' retry' : 'Passed geometry checks');
+    } else if (p.parser === 'cache') {
+      tone = 'ok'; pill = 'Cached AI parse'; note = 'Same description, same part';
+    } else if (p.parser === 'regex_fallback') {
+      tone = 'warn'; pill = 'Fallback parser'; note = 'AI parser unavailable; rule-based parse used';
+    } else if (p.parser === 'regex') {
+      pill = 'Rule-based parse'; note = 'AI parser not used';
+    } else if (legacyDeepseek) {
+      pill = 'AI parse'; note = 'Created before verification tracking';
+    } else {
+      pill = 'Rule-based parse'; note = 'AI parser not used';
+    }
+    const bits = [];
+    if (p.model) bits.push(esc(p.model));
+    if (p.prompt_version) bits.push('prompt ' + esc(p.prompt_version));
+    if (p.parse_hash) bits.push('hash ' + esc(String(p.parse_hash).slice(0, 10)));
+    return '<div class="prov-card ' + tone + '"><div class="prov-head"><span class="prov-pill">' + pill +
+           '</span><span class="prov-note">' + note + '</span></div>' +
+           (bits.length ? '<div class="prov-meta">' + bits.join(' · ') + '</div>' : '') + '</div>';
+  }
+
   function escapeHtml(s){
     const div = document.createElement('div');
     div.textContent = s == null ? '' : String(s);
     return div.innerHTML;
+  }
+
+
+  // ---- on-chain anchor row, shown right under each project ----
+  function shortTx(tx){ return tx ? tx.slice(0, 10) + '…' + tx.slice(-8) : ''; }
+
+  function anchorMarkup(state, tx, url){
+    if (state === 'done' && tx) {
+      return `<div class="job-anchor">
+        <span aria-hidden="true">⛓</span>
+        <div class="job-anchor-main">
+          <div class="job-anchor-title">Anchored on BOT Chain</div>
+          <div class="job-anchor-tx" title="${escapeHtml(tx)}">Tx ${escapeHtml(shortTx(tx))}</div>
+        </div>
+        <a class="btn btn-primary" href="${escapeHtml(url || '#')}" target="_blank" rel="noopener">View transaction →</a>
+      </div>`;
+    }
+    if (state === 'pending') {
+      return `<div class="job-anchor pending"><span aria-hidden="true">⏳</span>
+        <div class="job-anchor-main"><div class="job-anchor-title">Anchoring on-chain…</div>
+        <div class="job-anchor-tx">Your download has started. The transaction link appears here in a few seconds.</div></div></div>`;
+    }
+    if (state === 'slow') {
+      return `<div class="job-anchor pending"><span aria-hidden="true">⏳</span>
+        <div class="job-anchor-main"><div class="job-anchor-title">Anchor submitted, still confirming</div>
+        <div class="job-anchor-tx">Refresh this page in a minute to see the transaction link.</div></div></div>`;
+    }
+    if (state === 'off') {
+      return `<div class="job-anchor idle"><span aria-hidden="true">⛓</span>
+        <div class="job-anchor-main">On-chain anchoring isn't enabled on the server yet.</div></div>`;
+    }
+    return `<div class="job-anchor idle"><span aria-hidden="true">⛓</span>
+      <div class="job-anchor-main">Not anchored yet. Download the STEP file and the design is anchored on-chain automatically.</div></div>`;
+  }
+
+  function setAnchorState(jobId, state, tx, url){
+    const el = document.getElementById('anchor-' + jobId);
+    if (el) el.innerHTML = anchorMarkup(state, tx, url);
+  }
+
+  async function pollAnchor(base, session, jobId){
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        const r = await fetch(`${base}/api/jobs/${jobId}/provenance`, {
+          headers: { 'Authorization': 'Bearer ' + session.session_id },
+        });
+        if (!r.ok) continue;
+        const d = await r.json();
+        if (d.anchored && d.anchor_tx) {
+          setAnchorState(jobId, 'done', d.anchor_tx, d.explorer_tx_url);
+          return;
+        }
+      } catch (e) { /* keep polling */ }
+    }
+    setAnchorState(jobId, 'slow');
   }
 
   function renderJobCard(base, job){
@@ -486,10 +699,20 @@
     try { params = job.parameters ? JSON.parse(job.parameters) : {}; } catch(e) { /* leave empty */ }
     const paramsText = Object.entries(params).map(([k, v]) => `${k}: ${v}`).join('   ·   ');
     let dateText = job.created_at;
-    try { dateText = new Date(job.created_at + 'Z').toLocaleString(); } catch(e) { /* keep raw */ }
+    try {
+      let raw = String(job.created_at || '');
+      // Backend stores ISO with an offset (+00:00). Only add Z for naive strings.
+      if (raw && !/(Z|[+-]\d{2}:?\d{2})$/.test(raw)) raw += 'Z';
+      const d = new Date(raw);
+      dateText = isNaN(d.getTime()) ? '' : d.toLocaleString();
+    } catch(e) { dateText = ''; }
     const badge = job.success
       ? '<span class="job-badge ok">done</span>'
       : '<span class="job-badge fail">failed</span>';
+    const provCard = provenanceCardHtml({
+      parser: job.parser, model: job.parser_model, prompt_version: job.prompt_version,
+      retry_count: job.retry_count, parse_hash: job.parse_hash,
+    }, !job.success, !!job.used_deepseek);
     const stlUrl = resolveUrl(base, job.stl_url);
     const stlLink = (job.success && stlUrl)
       ? `<a href="${stlUrl}" target="_blank" rel="noopener" class="btn btn-ghost">↓ STL</a>`
@@ -504,14 +727,16 @@
         <div class="job-card-head">
           <div>
             <div class="job-part-type">${escapeHtml(job.part_type || 'part')}</div>
-            <div class="job-meta">${escapeHtml(dateText)}${job.used_deepseek ? ' · DeepSeek' : ''}</div>
+            <div class="job-meta">${escapeHtml(dateText)}${job.anchor_tx ? ' · anchored' : ''}</div>
           </div>
           ${badge}
         </div>
         <p class="job-desc">${escapeHtml(job.description)}</p>
+        ${provCard}
         ${paramsText ? `<div class="job-params">${escapeHtml(paramsText)}</div>` : ''}
         ${job.error ? `<div class="job-params job-error">${escapeHtml(job.error)}</div>` : ''}
         <div class="job-actions">${stlLink}${exportButtons}</div>
+        ${job.success ? `<div class="job-anchor-slot" id="anchor-${job.id}">${anchorMarkup(job.anchor_tx ? 'done' : (job.anchor_enabled === false ? 'off' : 'idle'), job.anchor_tx, job.anchor_explorer_url)}</div>` : ''}
       </div>
     `;
   }

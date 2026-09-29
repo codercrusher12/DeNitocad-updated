@@ -131,6 +131,20 @@
   .btn-primary:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none;}
   .btn-ghost{background:transparent;color:var(--ink);border-color:var(--ink);}
   .btn-ghost:hover{background:var(--ink);color:#fff;}
+  /* Ghost buttons on the dark pricing section need inverted colors so
+     Subscribe / Try-it CTAs stay readable (ink-on-navy is invisible). */
+  .pricing .btn-ghost{
+    color:#fff;border-color:rgba(255,255,255,.45);background:transparent;
+  }
+  .pricing .btn-ghost:hover{
+    background:rgba(255,255,255,.12);color:#fff;border-color:#fff;
+  }
+  .btn-google{
+    background:#fff;color:#1f1f1f;border-color:var(--line);
+    font-weight:600;
+  }
+  .btn-google:hover{background:#f7f7f7;transform:translateY(-1px);box-shadow:0 6px 16px -10px rgba(11,37,69,.35);}
+  .btn-google svg{flex-shrink:0;}
 
   /* ---------- HERO ---------- */
   .hero{padding:84px 0 96px;}
@@ -316,6 +330,17 @@
     background:var(--fog);border-radius:12px;padding:16px 18px;
   }
   .demo-params .row{display:flex;justify-content:space-between;gap:12px;}
+
+  /* Parser provenance card - shows what actually parsed the request */
+  .prov-card{margin-top:12px;padding:10px 14px;border-radius:10px;border:1px solid var(--line);background:var(--fog);font-size:.82rem;}
+  .prov-card.ok{background:rgba(19,165,125,.07);border-color:rgba(19,165,125,.25);}
+  .prov-card.warn{background:rgba(211,84,31,.07);border-color:rgba(211,84,31,.28);}
+  .prov-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+  .prov-pill{font-family:'IBM Plex Mono',monospace;font-size:.68rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:999px;background:#fff;border:1px solid var(--line);}
+  .prov-card.ok .prov-pill{color:var(--botchain-bright-deep);}
+  .prov-card.warn .prov-pill{color:var(--orange-deep);}
+  .prov-note{color:var(--ink-soft);}
+  .prov-meta{font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:var(--ink-soft);margin-top:6px;overflow-wrap:anywhere;}
   .demo-warn{
     margin-top:12px;padding:10px 14px;border-radius:8px;font-size:.8rem;
     background:#FFF3EC;border:1px dashed var(--orange);color:var(--orange-deep);
@@ -415,6 +440,8 @@
     .burger{display:flex;}
     nav.wrap > a.btn-primary{display:none;}
     #walletNavBtn{display:none;}
+    /* Google sign-in lives only in the dropdown (#googleSignInBtnMobile) */
+    #googleSignInBtn, #googleSignInDiv{display:none !important;}
   }
 </style>
 </head>
@@ -443,7 +470,11 @@
       <li><a href="refine.html">Prompt Refine</a></li>
     </ul>
     <button id="walletNavBtn" class="btn btn-ghost" style="margin-right:8px;">Connect Wallet</button>
-    <div id="googleSignInDiv" style="display:none;margin-right:8px;"></div>
+    <button id="googleSignInBtn" class="btn btn-google" type="button" style="display:none;margin-right:8px;" title="Sign in with Google">
+      <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      Sign in with Google
+    </button>
+    <div id="googleSignInDiv" style="display:none;"></div>
     <a href="#demo" class="btn btn-primary" style="margin-right:8px;">Try NitoCAD</a>
     <button class="burger" id="burger" aria-label="Open menu" aria-expanded="false" aria-controls="mobileMenu">
       <span></span><span></span><span></span>
@@ -459,6 +490,10 @@
     <a href="profile.html">My Projects</a>
     <a href="refine.html">Prompt Refine</a>
     <button id="walletNavBtnMobile" class="btn btn-ghost">Connect Wallet</button>
+    <button id="googleSignInBtnMobile" class="btn btn-google" type="button" style="display:none;margin-top:10px;" title="Sign in with Google">
+      <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      Sign in with Google
+    </button>
     <div id="googleSignInDivMobile" style="display:none;"></div>
     <a href="#demo" class="btn btn-primary">Try NitoCAD</a>
   </div>
@@ -662,7 +697,7 @@
       <div class="price-grid" id="subscriptionGrid">
         <div class="price-card">
           <span class="tag">Starter</span>
-          <h3>$5<span style="font-size:.5em;font-weight:400;">/mo</span></h3>
+          <h3>$5<span style="font-size:.55em;font-weight:400;opacity:.85;">/month</span></h3>
           <div class="amount"><b>10</b><span>generations / day</span></div>
           <p class="sub">100 subscription credits per period (resets, doesn't roll over) - the daily cap throttles how fast you can spend that pool, it isn't a separate allowance on top.</p>
           <ul>
@@ -674,9 +709,9 @@
         </div>
         <div class="price-card native">
           <span class="tag">Most popular</span>
-          <h3>Engineer<span style="font-size:.5em;font-weight:400;"> $10/mo</span></h3>
+          <h3>$10<span style="font-size:.55em;font-weight:400;opacity:.85;">/month</span></h3>
           <div class="amount"><b>30</b><span>generations / day</span></div>
-          <p class="sub">No credit pool - every generation under the daily cap is simply free, nothing deducted from any balance.</p>
+          <p class="sub">Engineer plan — no credit pool. Every generation under the daily cap is simply free, nothing deducted from any balance.</p>
           <ul>
             <li>30 free generations per rolling 24 hours</li>
             <li>30 days of prompt-refinement access</li>
@@ -686,7 +721,7 @@
         </div>
         <div class="price-card">
           <span class="tag">Professional</span>
-          <h3>$50<span style="font-size:.5em;font-weight:400;">/mo</span></h3>
+          <h3>$50<span style="font-size:.55em;font-weight:400;opacity:.85;">/month</span></h3>
           <div class="amount"><b>150</b><span>generations / day</span></div>
           <p class="sub">Same free-allowance model as Engineer, at a higher cap.</p>
           <ul>
@@ -1032,7 +1067,8 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     // Once signed in (either identity), the Google button has nothing
     // left to do - hide it rather than leaving a second, confusing
     // "sign in" control next to the now-populated wallet button.
-    [document.getElementById('googleSignInDiv'), document.getElementById('googleSignInDivMobile')]
+    [document.getElementById('googleSignInDiv'), document.getElementById('googleSignInDivMobile'),
+     document.getElementById('googleSignInBtn'), document.getElementById('googleSignInBtnMobile')]
       .forEach(el => { if(el && session) el.style.display = 'none'; });
   }
 
@@ -1152,11 +1188,40 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
         }
       },
     });
-    ['googleSignInDiv', 'googleSignInDivMobile'].forEach((id) => {
-      const el = document.getElementById(id);
-      if(!el) return;
-      el.style.display = '';
-      window.google.accounts.id.renderButton(el, { theme: 'outline', size: 'medium', text: 'signin' });
+    // Custom buttons styled like "Connect Wallet" — GSI renderButton
+    // produces a iframe widget that never matches the rest of the nav.
+    // We still load the GSI client for the credential callback, then
+    // trigger prompt() / cancel() from our own buttons.
+    const googleBtns = [
+      document.getElementById('googleSignInBtn'),
+      document.getElementById('googleSignInBtnMobile'),
+    ].filter(Boolean);
+    googleBtns.forEach((btn) => {
+      btn.style.display = '';
+      btn.onclick = () => {
+        try {
+          window.google.accounts.id.prompt((notification) => {
+            if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+              // Fallback: open the OAuth consent via a temporary GSI button
+              // in a hidden div if One Tap is blocked (ITP, prior dismiss, etc.).
+              const host = document.getElementById(btn.id === 'googleSignInBtnMobile' ? 'googleSignInDivMobile' : 'googleSignInDiv') || document.body;
+              host.innerHTML = '';
+              host.style.display = 'block';
+              window.google.accounts.id.renderButton(host, {
+                theme: 'outline', size: 'large', text: 'signin_with',
+                width: 280,
+              });
+              // Auto-click the rendered button if possible
+              setTimeout(() => {
+                const gbtn = host.querySelector('div[role="button"]');
+                if (gbtn) gbtn.click();
+              }, 100);
+            }
+          });
+        } catch (err) {
+          alert('Google sign-in failed to start: ' + (err.message || err));
+        }
+      };
     });
   }
   initGoogleSignIn();
@@ -1255,34 +1320,174 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
   }
   window.handleSubscribeClick = handleSubscribeClick;
 
+  function showProvenanceBanner(jobId, anchorTx, explorerUrl){
+    // Customer-facing on-chain receipt after STEP export. Shown next to
+    // the demo results so they can open the explorer without digging
+    // through Railway logs.
+    let host = document.getElementById('provenanceBanner');
+    if(!host){
+      host = document.createElement('div');
+      host.id = 'provenanceBanner';
+      host.style.cssText = 'margin-top:16px;padding:14px 16px;border-radius:12px;background:#0E2C52;color:#fff;font-size:.9rem;line-height:1.5;';
+      const results = document.getElementById('results') || document.getElementById('demoResults') || statusEl;
+      if(results && results.parentNode) results.parentNode.insertBefore(host, results.nextSibling);
+      else document.body.appendChild(host);
+    }
+    const shortTx = anchorTx ? (anchorTx.slice(0, 10) + '…' + anchorTx.slice(-6)) : '';
+    host.innerHTML = `
+      <div style="font-family:IBM Plex Mono,monospace;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;opacity:.7;margin-bottom:6px;">On-chain provenance</div>
+      <div style="margin-bottom:8px;">This design was anchored on BOT Chain. Anyone can verify the parameters hash and STEP file hash on the explorer.</div>
+      <div style="font-family:IBM Plex Mono,monospace;font-size:.8rem;word-break:break-all;opacity:.9;margin-bottom:10px;">Tx ${shortTx}</div>
+      <a href="${explorerUrl}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:999px;background:#13A57D;color:#fff;font-weight:600;text-decoration:none;">View on explorer →</a>
+      <span style="margin-left:10px;opacity:.65;font-size:.8rem;">Job ${jobId.slice(0,8)}…</span>
+    `;
+  }
+
+  // ===== Mobile-safe downloads (same helper on every page) =====
+  // Why: fetch()->blob-><a download>->revokeObjectURL() works on desktop but
+  // fails on phones (iOS Safari ignores `download` on blob: URLs, and the
+  // revoke cancels the save; after an await the tap gesture is gone, so
+  // share/download can silently no-op). Fix: the API hands back a short-lived
+  // signed URL served with Content-Disposition: attachment - a plain
+  // navigation every mobile browser can handle - and a "Tap to save" bar
+  // (a fresh, real tap) is shown as a backup on phones / in-app browsers.
+  const NITO_IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const NITO_IN_APP = /FBAN|FBAV|Instagram|Twitter|Telegram|MicroMessenger|TikTok|[;] wv[)]/i.test(navigator.userAgent);
+  let _nitoBarTimer = null, _nitoBarRevoke = null;
+
+  function nitoHideSaveBar(){
+    const el = document.getElementById('nitoSaveBar');
+    if (el) el.remove();
+    clearTimeout(_nitoBarTimer);
+    if (_nitoBarRevoke) { const u = _nitoBarRevoke; _nitoBarRevoke = null; setTimeout(() => URL.revokeObjectURL(u), 60000); }
+  }
+
+  function nitoShowSaveBar(url, filename, isBlob){
+    nitoHideSaveBar();
+    const bar = document.createElement('div');
+    bar.id = 'nitoSaveBar';
+    bar.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:99999;background:#111827;color:#fff;border-radius:14px;padding:12px 14px;display:flex;align-items:center;gap:10px;box-shadow:0 8px 30px rgba(0,0,0,.35);font:14px/1.3 system-ui,-apple-system,sans-serif;';
+    const txt = document.createElement('div');
+    txt.style.cssText = 'flex:1;min-width:0;word-break:break-all;';
+    txt.textContent = NITO_IN_APP
+      ? 'Not saving? Open this page in Safari/Chrome. ' + filename
+      : (isBlob ? 'Ready: ' : 'Download started. Not saving? ') + filename;
+    const a = document.createElement('a');
+    a.href = url;
+    a.textContent = 'Tap to save';
+    a.setAttribute('download', filename);
+    a.rel = 'noopener';
+    a.style.cssText = 'background:#13A57D;color:#fff;padding:9px 14px;border-radius:999px;font-weight:600;text-decoration:none;white-space:nowrap;';
+    a.addEventListener('click', () => setTimeout(nitoHideSaveBar, 1500));
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.textContent = '\u2715';
+    x.setAttribute('aria-label', 'Dismiss');
+    x.style.cssText = 'background:none;border:0;color:#9ca3af;font-size:18px;padding:4px 6px;';
+    x.addEventListener('click', nitoHideSaveBar);
+    bar.append(txt, a, x);
+    document.body.appendChild(bar);
+    if (isBlob) _nitoBarRevoke = url;
+    _nitoBarTimer = setTimeout(nitoHideSaveBar, isBlob ? 300000 : 25000);
+  }
+
+  // Preferred path: the API returned a signed, short-lived URL that responds
+  // with Content-Disposition: attachment. Navigating to it downloads the file
+  // without leaving the page, on desktop and mobile alike.
+  function nitoDeliver(url, filename){
+    const a = document.createElement('a');
+    a.href = url;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => a.remove(), 1000);
+    if (NITO_IS_MOBILE || NITO_IN_APP) nitoShowSaveBar(url, filename, false);
+  }
+
+  // Fallback for files we only have as a Blob (e.g. an owned STL fetched by
+  // filename). Mobile: Web Share (files) -> else "Tap to save" bar with a
+  // fresh gesture. Desktop: classic <a download> with a DELAYED revoke.
+  async function nitoBlobDownload(blob, filename){
+    if (NITO_IS_MOBILE && navigator.canShare && navigator.share) {
+      try {
+        const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: filename });
+          return;
+        }
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;   // user closed the share sheet
+        // gesture expired / type not shareable -> fall through to the save bar
+      }
+    }
+    const url = URL.createObjectURL(blob);
+    if (NITO_IS_MOBILE || NITO_IN_APP) { nitoShowSaveBar(url, filename, true); return; }
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+  // ===== end mobile-safe downloads =====
+
   async function downloadFormat(base, fmt, jobId, btn){
     // No payment here - the job's original /generate payment already
     // covers every export format pulled from it. See
     // /export/{fmt}/{job_id}'s docstring in web_app.py.
     const session = getWalletSession(base);
-    if(!session){ alert('Your wallet session expired - reconnect and regenerate to download.'); return; }
+    if(!session){ alert('Your wallet session expired - reconnect to download.'); return; }
     const originalText = btn.textContent;
     btn.disabled = true;
     btn.textContent = 'Building...';
     try {
-      const resp = await fetch(`${base}/export/${fmt}/${jobId}`, {
+      // 1) authenticated call builds the file and returns a short-lived
+      //    signed URL (see POST /export/{fmt}/{job_id}/link in web_app.py)
+      const resp = await fetch(`${base}/export/${fmt}/${jobId}/link`, {
+        method: 'POST',
         headers: { 'Authorization': 'Bearer ' + session.session_id },
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.detail || `Export failed (HTTP ${resp.status}).`);
       }
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const cd = resp.headers.get('content-disposition') || '';
-      const match = cd.match(/filename="?([^"]+)"?/);
-      a.download = match ? match[1] : `${jobId}.${fmt}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      const info = await resp.json();
+      const anchorTx = info.anchor_tx;
+      const explorerUrl = info.explorer_url;
+      // 2) plain navigation to an attachment URL - works on phones
+      nitoDeliver(base + info.url, info.filename || `${jobId}.${fmt}`);
+      if (anchorTx && explorerUrl) {
+        showProvenanceBanner(jobId, anchorTx, explorerUrl);
+      } else if (fmt === 'step' && info.anchoring) {
+        // The download has started; the server now submits the on-chain
+        // anchor. Poll briefly for the tx and show the banner when it lands.
+        statusEl.classList.remove('err');
+        statusEl.textContent = 'STEP downloading - anchoring on-chain…';
+        (async () => {
+          for (let i = 0; i < 15; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            try {
+              const r = await fetch(`${base}/api/jobs/${jobId}/provenance`, {
+                headers: { 'Authorization': 'Bearer ' + session.session_id },
+              });
+              if (!r.ok) continue;
+              const d = await r.json();
+              if (d.anchored && d.anchor_tx) {
+                statusEl.textContent = 'STEP downloaded and anchored on-chain.';
+                showProvenanceBanner(jobId, d.anchor_tx, d.explorer_tx_url);
+                return;
+              }
+            } catch (e) { /* keep polling */ }
+          }
+          statusEl.textContent = 'STEP downloaded. Anchor still confirming - see My Projects in a minute.';
+        })();
+      } else if (fmt === 'step') {
+        statusEl.classList.remove('err');
+        statusEl.textContent = 'STEP downloaded. On-chain anchoring is not enabled on the server yet.';
+      }
     } catch (err) {
       alert('Download failed: ' + err.message);
     } finally {
@@ -1311,14 +1516,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     btn.disabled = true;
     try {
       const blob = await fetchOwnedStl(base, url);
-      const objUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = objUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(objUrl);
+      await nitoBlobDownload(blob, filename);
     } catch (err) {
       alert('Download failed: ' + err.message);
     } finally {
@@ -1401,6 +1599,39 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     );
   }
 
+
+  // Parser provenance card. `p` = {parser, model, prompt_version, retry_count,
+  // parse_hash}; `failed` marks a rejected/failed job. Legacy jobs (created
+  // before provenance was tracked) have no parser: fall back to used_deepseek.
+  function provenanceCardHtml(p, failed, legacyDeepseek){
+    const esc = s => { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; };
+    p = p || {};
+    let tone = '', pill, note;
+    if (p.parser === 'deepseek') {
+      tone = failed ? 'warn' : 'ok';
+      pill = failed ? 'AI parse rejected' : 'AI parse';
+      note = failed ? 'Did not pass the geometry checks'
+           : (p.retry_count ? 'Corrected after ' + p.retry_count + ' retry' : 'Passed geometry checks');
+    } else if (p.parser === 'cache') {
+      tone = 'ok'; pill = 'Cached AI parse'; note = 'Same description, same part';
+    } else if (p.parser === 'regex_fallback') {
+      tone = 'warn'; pill = 'Fallback parser'; note = 'AI parser unavailable; rule-based parse used';
+    } else if (p.parser === 'regex') {
+      pill = 'Rule-based parse'; note = 'AI parser not used';
+    } else if (legacyDeepseek) {
+      pill = 'AI parse'; note = 'Created before verification tracking';
+    } else {
+      pill = 'Rule-based parse'; note = 'AI parser not used';
+    }
+    const bits = [];
+    if (p.model) bits.push(esc(p.model));
+    if (p.prompt_version) bits.push('prompt ' + esc(p.prompt_version));
+    if (p.parse_hash) bits.push('hash ' + esc(String(p.parse_hash).slice(0, 10)));
+    return '<div class="prov-card ' + tone + '"><div class="prov-head"><span class="prov-pill">' + pill +
+           '</span><span class="prov-note">' + note + '</span></div>' +
+           (bits.length ? '<div class="prov-meta">' + bits.join(' · ') + '</div>' : '') + '</div>';
+  }
+
   function renderResult(base, data, isPreview){
     const p = data.parameters || {};
     let rows = `<div class="row"><span>part_type</span><b>${p.part_type}</b></div>`;
@@ -1421,6 +1652,8 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
       html += '</ul></div>';
       warningsEl.innerHTML = html;
     }
+
+    warningsEl.innerHTML = provenanceCardHtml(data.provenance, false, false) + warningsEl.innerHTML;
 
     function resolveUrl(pathOrUrl){
       if(!pathOrUrl) return null;
@@ -1477,7 +1710,9 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     if (downloadStlUrl) {
       links = isPreview
         ? `<a href="${downloadStlUrl}" target="_blank" rel="noopener">↓ STL (mesh)</a>`
-        : `<button class="btn btn-ghost" onclick="downloadOwnedStl('${base}','${localStlUrl}','${(data.stl_file||'part').split('/').pop()}',event.target)">↓ STL (mesh)</button>`;
+        : (data.job_id
+            ? `<button class="btn btn-ghost" onclick="downloadFormat('${base}','stl','${data.job_id}',event)">↓ STL (mesh)</button>`
+            : `<button class="btn btn-ghost" onclick="downloadOwnedStl('${base}','${localStlUrl}','${(data.stl_file||'part').split('/').pop()}',event.target)">↓ STL (mesh)</button>`);
     }
     if (data.job_id && !isPreview) {
       for (const [fmt, label] of Object.entries(formatLabels)) {
@@ -1492,10 +1727,14 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     }
     downloadsEl.innerHTML = meta + `<div class="demo-dl-links">${links}</div>`;
 
+    // Always prefer the job-id proxy so the viewer never hits R2
+    // cross-origin (R2 has no CORS rule for this frontend) and never
+    // depends on Railway's ephemeral local disk still holding the file.
+    const jobStlUrl = data.job_id ? `${base}/download/job/${data.job_id}/stl` : null;
     if (isPreview) {
-      loadSTL(localStlUrl || downloadStlUrl);
+      loadSTL(jobStlUrl || localStlUrl || downloadStlUrl);
     } else {
-      fetchOwnedStl(base, localStlUrl || downloadStlUrl)
+      fetchOwnedStl(base, jobStlUrl || localStlUrl || downloadStlUrl)
         .then(blob => loadSTL(URL.createObjectURL(blob)))
         .catch(err => { warningsEl.innerHTML += `<p class="err">Viewer failed: ${err.message}</p>`; });
     }

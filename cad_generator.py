@@ -90,6 +90,11 @@ class CADGenerator:
         resolved_key = api_key or settings.DEEPSEEK_API_KEY
         resolved_model = model or settings.DEEPSEEK_DEFAULT_MODEL
         used_deepseek = bool(resolved_key) and use_deepseek is not False
+        parser_name = None
+        parser_model = resolved_model if resolved_key else None
+        prompt_version = None
+        retry_count = 0
+        parse_hash = None
 
         try:
             if not description or not description.strip():
@@ -110,10 +115,15 @@ class CADGenerator:
                     description, use_deepseek=use_deepseek, api_key=api_key, model=resolved_model
                 )
 
-            # Mirrors deepseek_parser.parse_description's own resolution
-            # logic, purely so the db audit log records what actually
-            # happened rather than just echoing the caller's input flag.
-            used_deepseek = (use_deepseek is not False) and bool(resolved_key)
+            # Record what actually happened, rather than inferring it only
+            # from whether an API key existed. A cache hit is a validated
+            # DeepSeek-origin parse; regex fallback is not.
+            parser_name = params.parser
+            parser_model = params.model or resolved_model
+            prompt_version = params.prompt_version
+            retry_count = params.retry_count
+            parse_hash = params.parse_hash
+            used_deepseek = parser_name in {"deepseek", "cache"}
 
             if params.part_type == "unknown":
                 raise ParseError("Could not determine part type from description")
@@ -184,8 +194,13 @@ class CADGenerator:
                 used_deepseek=used_deepseek,
                 step_url=step_url,
                 stl_url=stl_url,
-                warnings=validation_result.warnings,
+                warnings=list(params.warnings) + list(validation_result.warnings),
                 corrections=validation_result.corrections,
+                parser=parser_name,
+                parser_model=parser_model,
+                prompt_version=prompt_version,
+                retry_count=retry_count,
+                parse_hash=parse_hash,
             )
 
             result = {
@@ -193,11 +208,14 @@ class CADGenerator:
                 "job_id": job_id,
                 "parameters": params.dict(),
                 "validation": {
-                    "warnings": validation_result.warnings,
+                    "warnings": list(params.warnings) + list(validation_result.warnings),
                     "errors": validation_result.errors,
                     "corrections": validation_result.corrections,
                 },
                 "error": None,
+                "provenance": self._provenance(
+                    parser_name, parser_model, prompt_version, retry_count, parse_hash
+                ),
             }
             # step_file/stl_file/... and step_url/stl_url/... - populated
             # only for formats that were actually requested, None otherwise,
@@ -210,21 +228,36 @@ class CADGenerator:
 
         except NitocadError as exc:
             logger.warning("generation failed (%s): %s", type(exc).__name__, exc.message)
+            # A ParseError raised inside the parser carries what actually ran.
+            d = getattr(exc, "details", None) or {}
+            parser_name = parser_name or d.get("parser")
+            parser_model = d.get("model") or parser_model
+            prompt_version = prompt_version or d.get("prompt_version")
+            retry_count = retry_count or d.get("retry_count", 0)
             db.record_job(
                 description=description, user_id=user_id, success=False,
                 used_deepseek=used_deepseek, error=exc.message,
+                parser=parser_name, parser_model=parser_model,
+                prompt_version=prompt_version, retry_count=retry_count,
+                parse_hash=parse_hash,
             )
             return {
                 "success": False,
                 "error": exc.message,
                 "error_type": type(exc).__name__,
                 "parameters": None,
+                "provenance": self._provenance(
+                    parser_name, parser_model, prompt_version, retry_count, parse_hash
+                ),
             }
         except Exception as exc:  # noqa: BLE001 - last-resort boundary; see exceptions.py
             logger.exception("unexpected generation failure")
             db.record_job(
                 description=description, user_id=user_id, success=False,
                 used_deepseek=used_deepseek, error=str(exc),
+                parser=parser_name, parser_model=parser_model,
+                prompt_version=prompt_version, retry_count=retry_count,
+                parse_hash=parse_hash,
             )
             return {
                 "success": False,
@@ -234,6 +267,19 @@ class CADGenerator:
             }
 
     # -- internal helpers ------------------------------------------------
+
+    @staticmethod
+    def _provenance(parser, model, prompt_version, retry_count, parse_hash) -> dict | None:
+        """What actually parsed this request - shown on the job/result cards."""
+        if parser is None:
+            return None
+        return {
+            "parser": parser,
+            "model": model,
+            "prompt_version": prompt_version,
+            "retry_count": retry_count,
+            "parse_hash": parse_hash,
+        }
 
     def _generate_assembly(
         self, description: str, formats: list[str]
@@ -319,7 +365,9 @@ class CADGenerator:
             raise GenerationError(f"Failed to build {part_type}: {exc}") from exc
         return workplane
 
-    def export_format_for_job(self, job_id: str, fmt: str) -> tuple[Path, str]:
+    def export_format_for_job(
+        self, job_id: str, fmt: str, anchor: bool = True
+    ) -> tuple[Path, str]:
         """On-demand export: rebuild geometry from a stored job's params
         and export exactly one format. This is the deferred half of what
         /generate used to do inline for every format on every call - see
@@ -353,6 +401,17 @@ class CADGenerator:
             # Cheap same-instance cache. Railway's filesystem is ephemeral
             # across redeploys (see storage.py), so this only helps within
             # one running process, not a durability guarantee.
+            if resolved_fmt == "step" and anchor and not job.get("anchor_tx"):
+                # A cached STEP that never got anchored (first attempt failed
+                # or anchoring wasn't configured yet) must not stay
+                # un-anchored forever just because the file is cached.
+                import json as _json2
+                import design_registry
+                design_registry.anchor_design(
+                    job_id, part_type,
+                    _json2.loads(job["parameters"]) if job["parameters"] else {},
+                    out_path,
+                )
             return out_path, part_type
 
         import json as _json
@@ -370,7 +429,7 @@ class CADGenerator:
         except Exception as exc:  # noqa: BLE001
             raise GenerationError(f"{resolved_fmt.upper()} export failed: {exc}") from exc
 
-        if resolved_fmt == "step":
+        if resolved_fmt == "step" and anchor and not job.get("anchor_tx"):
             # Only STEP, not every format - it's the canonical solid
             # deliverable, and anchorDesign() reverts on a duplicate
             # jobId anyway (one anchor per job, not per export click).
@@ -379,7 +438,12 @@ class CADGenerator:
             # the export itself - the payment already happened, the
             # file is owed regardless of whether the chain call works.
             import design_registry
-            design_registry.anchor_design(job_id, part_type, parameters, out_path)
+            design_registry.anchor_design(
+                job_id,
+                part_type,
+                parameters,
+                out_path,
+            )
 
         return out_path, part_type
 

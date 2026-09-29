@@ -4,6 +4,14 @@ Freeform shapes: sweeps, lofts, revolves.
 import cadquery as cq
 import math
 
+def _open_ring(points):
+    """Drop a repeated closing point (CadQuery closes the wire itself)."""
+    pts = [tuple(p) for p in points]
+    if len(pts) > 1 and pts[0] == pts[-1]:
+        pts.pop()
+    return pts
+
+
 def generate_revolved_part(params: dict) -> cq.Workplane:
     """
     Generate a revolved part from a profile.
@@ -17,8 +25,12 @@ def generate_revolved_part(params: dict) -> cq.Workplane:
         (0, 0), (10, 0), (10, 20), (5, 25), (0, 25)
     ])
     axis = params.get('revolve_axis', 'Y')
-    angle = params.get('revolve_angle', 360)
+    angle = params.get('revolve_angle_deg', params.get('revolve_angle', 360))
     
+    profile_points = _open_ring(profile_points)
+    if len(profile_points) < 3:
+        raise ValueError("freeform profile requires at least 3 points")
+
     # Create profile wire
     result = cq.Workplane("XY")
     
@@ -57,6 +69,16 @@ def generate_swept_part(params: dict) -> cq.Workplane:
     ])
     profile_size = params.get('profile_size', 1.0)
     
+    profile_points = _open_ring(profile_points)
+    if len(profile_points) < 3:
+        raise ValueError("sweep profile requires at least 3 points")
+    if len(path_points) < 2:
+        raise ValueError("sweep path requires at least 2 points")
+    # The path is drawn on the XZ plane, so a non-zero y would be silently
+    # dropped. Refuse instead of building a different path than requested.
+    if any(abs(float(p[1])) > 1e-9 for p in path_points):
+        raise ValueError("sweep path_points must have y=0 ([x,0,z]); 3D paths are not supported")
+
     # Create profile
     profile = cq.Workplane("XY")
     profile = profile.moveTo(profile_points[0][0] * profile_size, profile_points[0][1] * profile_size)
@@ -88,10 +110,17 @@ def generate_lofted_part(params: dict) -> cq.Workplane:
         {'points': [(-8, -8), (8, -8), (8, 8), (-8, 8)], 'z': 40}
     ])
     
+    if not isinstance(profiles, list) or len(profiles) < 2:
+        raise ValueError("loft requires at least two profiles")
+
     # Create each profile as a workplane
     wires = []
     for profile_def in profiles:
-        points = profile_def['points']
+        if not isinstance(profile_def, dict) or len(profile_def.get('points', [])) < 3:
+            raise ValueError("each loft profile requires at least three points")
+        points = _open_ring(profile_def['points'])
+        if len(points) < 3:
+            raise ValueError("each loft profile requires at least three points")
         z_offset = profile_def['z']
         
         wp = cq.Workplane("XY").workplane(offset=z_offset)
@@ -114,14 +143,15 @@ def generate_freeform(params: dict) -> cq.Workplane:
     - operation: "sweep", "loft", "revolve"
     - Other params depend on operation
     """
+    # Keep the template callable with its historical standalone defaults;
+    # the LLM pipeline itself rejects missing/invalid operations before this
+    # function is reached.
     operation = params.get('operation', 'revolve')
-    
+
     if operation == 'revolve':
         return generate_revolved_part(params)
-    elif operation == 'sweep':
+    if operation == 'sweep':
         return generate_swept_part(params)
-    elif operation == 'loft':
+    if operation == 'loft':
         return generate_lofted_part(params)
-    else:
-        # Default to a simple revolved shape
-        return generate_revolved_part(params)
+    raise ValueError("freeform operation must be sweep, loft, or revolve")

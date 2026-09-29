@@ -99,10 +99,38 @@ def init_db() -> None:
                 stl_url TEXT,
                 warnings TEXT,
                 corrections TEXT,
+                anchor_tx TEXT,
                 created_at TEXT NOT NULL
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS parse_cache (
+                cache_key TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt_version TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        # Provenance columns were added after the original jobs schema.
+        # ALTER only when a deployed sqlite file predates them.
+        existing_job_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+        for column, sql_type in {
+            "parser": "TEXT",
+            "parser_model": "TEXT",
+            "prompt_version": "TEXT",
+            "retry_count": "INTEGER NOT NULL DEFAULT 0",
+            "parse_hash": "TEXT",
+        }.items():
+            if column not in existing_job_columns:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {sql_type}")
+
         # api_keys table removed here (see module docstring) - init_db()
         # deliberately does NOT drop it from any existing deployed sqlite
         # file (a DROP is destructive and irreversible; simply never
@@ -243,6 +271,9 @@ def init_db() -> None:
             "ALTER TABLE subscriptions ADD COLUMN paystack_customer_code TEXT",
             "ALTER TABLE subscriptions ADD COLUMN paystack_subscription_code TEXT",
             "ALTER TABLE subscriptions ADD COLUMN paystack_plan_code TEXT",
+            # On-chain provenance tx hash (DesignRegistry.anchorDesign) - set
+            # after a paid STEP export succeeds. Existing DBs lack this column.
+            "ALTER TABLE jobs ADD COLUMN anchor_tx TEXT",
         ):
             try:
                 conn.execute(column_sql)
@@ -282,6 +313,65 @@ def check_connection() -> bool:
 
 # ---------------------------------------------------------------- jobs ----
 
+def _ensure_parse_cache_table(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS parse_cache (
+            cache_key TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            model TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def get_parse_cache(cache_key: str) -> dict[str, Any] | None:
+    """Return a validated parser result previously stored under cache_key."""
+    with get_conn() as conn:
+        _ensure_parse_cache_table(conn)
+        row = conn.execute(
+            "SELECT result_json FROM parse_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["result_json"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+
+
+def put_parse_cache(
+    cache_key: str,
+    *,
+    description: str,
+    model: str,
+    prompt_version: str,
+    result: dict[str, Any],
+) -> None:
+    """Store only a parser result that has already passed fidelity validation."""
+    with get_conn() as conn:
+        _ensure_parse_cache_table(conn)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO parse_cache
+            (cache_key, description, model, prompt_version, result_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                cache_key,
+                description,
+                model,
+                prompt_version,
+                json.dumps(result, sort_keys=True, separators=(",", ":")),
+                _now(),
+            ),
+        )
+
+
 def record_job(
     *,
     description: str,
@@ -296,6 +386,11 @@ def record_job(
     stl_url: str | None = None,
     warnings: list | None = None,
     corrections: dict | None = None,
+    parser: str | None = None,
+    parser_model: str | None = None,
+    prompt_version: str | None = None,
+    retry_count: int = 0,
+    parse_hash: str | None = None,
 ) -> str:
     """Persist one generation job and return its id (a uuid4 string, also
     used as the on-disk/R2 filename stem - see storage.py)."""
@@ -306,8 +401,9 @@ def record_job(
             INSERT INTO jobs (
                 id, user_id, description, part_type, parameters, material,
                 used_deepseek, success, error, step_url, stl_url,
-                warnings, corrections, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                warnings, corrections, parser, parser_model, prompt_version,
+                retry_count, parse_hash, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
@@ -323,6 +419,11 @@ def record_job(
                 stl_url,
                 json.dumps(warnings) if warnings is not None else None,
                 json.dumps(corrections) if corrections is not None else None,
+                parser,
+                parser_model,
+                prompt_version,
+                retry_count,
+                parse_hash,
                 _now(),
             ),
         )
@@ -333,6 +434,36 @@ def get_job(job_id: str) -> dict[str, Any] | None:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return dict(row) if row else None
+
+
+def set_job_anchor_tx(job_id: str, tx_hash: str) -> None:
+    """Persist the DesignRegistry anchor transaction hash on the job row
+    so the customer can open it on the explorer later (My Projects, STEP
+    export response headers). Idempotent: later calls overwrite."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET anchor_tx = ? WHERE id = ?",
+            (tx_hash, job_id),
+        )
+
+
+def find_remote_url_for_filename(filename: str, fmt: str) -> str | None:
+    """Best-effort lookup of a durable URL for a local output filename.
+
+    Local files are named ``{part_type}_{uuid}.stl`` while R2 keys use a
+    different uuid, so object-key matching is impossible. When the stored
+    URL itself still ends with the local filename (the non-R2 fallback
+    path ``/download/{fmt}/{filename}``), return that. Otherwise return
+    None — callers with a job_id should use GET /download/job/{job_id}/{fmt}.
+    """
+    col = "stl_url" if fmt == "stl" else "step_url"
+    with get_conn() as conn:
+        row = conn.execute(
+            f"SELECT {col} AS url FROM jobs WHERE {col} LIKE ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (f"%/{filename}%",),
+        ).fetchone()
+        return row["url"] if row and row["url"] else None
 
 
 def list_jobs(user_id: str = "default", limit: int = 50) -> list[dict[str, Any]]:
@@ -907,7 +1038,7 @@ def count_generations_last_24h(wallet_address: str) -> int:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS c FROM jobs WHERE user_id = ? AND created_at > ?",
+            "SELECT COUNT(*) AS c FROM jobs WHERE user_id = ? AND success = 1 AND created_at > ?",
             (wallet_address.lower(), cutoff),
         ).fetchone()
         return row["c"]
@@ -982,6 +1113,25 @@ def charge_generation(wallet_address: str) -> str | None:
     if consume_credit(wallet_address):
         return "purchased"
     return None
+
+
+def refund_generation(wallet_address: str, charged_pool: str | None) -> None:
+    """Undo charge_generation() for a /generate call that produced nothing.
+
+    "purchased"           -> give the credit back to the purchased pool.
+    "subscription_credit" -> give it back to the subscription pool.
+    "subscription_daily"  -> nothing was deducted; failed jobs no longer count
+                             toward the daily cap (see count_generations_last_24h).
+    """
+    if charged_pool == "purchased":
+        add_credits(wallet_address, 1)
+    elif charged_pool == "subscription_credit":
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE subscriptions SET subscription_credits = subscription_credits + 1, "
+                "updated_at = ? WHERE wallet_address = ?",
+                (_now(), wallet_address.lower()),
+            )
 
 
 def claim_signup_bonus(wallet_address: str, qualifying_payment_id: str) -> bool:

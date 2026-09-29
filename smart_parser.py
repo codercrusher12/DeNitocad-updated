@@ -35,6 +35,14 @@ class ParsedParameters(BaseModel):
     assembly_parts: list[dict[str, Any]] = Field(default_factory=list)
     confidence: float = 0.0
     warnings: list[str] = Field(default_factory=list)
+    # Parser provenance is part of the job record so a UI card can tell
+    # whether the geometry came from the LLM, the deterministic fallback,
+    # or a previously validated cache entry.
+    parser: str = "regex_fallback"
+    model: str | None = None
+    prompt_version: str | None = None
+    retry_count: int = 0
+    parse_hash: str | None = None
 
 # Unit conversion
 UNIT_TO_MM = {
