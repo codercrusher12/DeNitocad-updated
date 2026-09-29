@@ -1651,11 +1651,22 @@ async def preview_cad(request: Request, body: PreviewRequest):
     someone other than whoever generated it. Liking a preview means
     re-submitting the same description through the paid /generate flow
     - a fresh job, not unlocking this one."""
+    from parse_policy import decide_parse_policy
+    from config import settings as _settings
+
+    policy = decide_parse_policy(
+        body.description,
+        "preview",
+        use_deepseek=False,
+        deepseek_key_available=bool(_settings.DEEPSEEK_API_KEY),
+    )
     result = generator.generate_from_text(
         body.description,
         use_deepseek=False,
         user_id="anonymous",
         formats=["stl"],
+        endpoint="preview",
+        parse_policy=policy,
     )
     return result
 
@@ -1689,6 +1700,22 @@ async def generate_cad(
     Only STL is built here (the preview) - STEP/IGES/DXF/PDF are
     deferred to GET /export/{fmt}/{job_id}, built on demand, only for
     formats actually requested, but not billed again."""
+    from parse_policy import decide_parse_policy
+    from config import settings as _settings
+
+    # Fail-closed policy before charging: reject AI-needed + use_deepseek=false
+    # on paid path with 422 and no charge.
+    policy = decide_parse_policy(
+        body.description,
+        "paid",
+        body.use_deepseek,
+        deepseek_key_available=bool(
+            body.api_key or _settings.DEEPSEEK_API_KEY
+        ),
+    )
+    if policy.decision == "reject":
+        raise HTTPException(status_code=422, detail=policy.reason)
+
     charged_pool = db.charge_generation(wallet["wallet_address"])
     if charged_pool is None:
         raise HTTPException(
@@ -1699,19 +1726,33 @@ async def generate_cad(
             ),
         )
 
+    # Force DeepSeek when policy requires it (AI-needed shapes on paid).
+    effective_use_deepseek = True if policy.force_deepseek else body.use_deepseek
+
     result = generator.generate_from_text(
         body.description,
-        use_deepseek=body.use_deepseek,
+        use_deepseek=effective_use_deepseek,
         api_key=body.api_key,
         model=body.model,
         user_id=wallet["wallet_address"],
         formats=["stl"],
+        endpoint="paid",
+        parse_policy=policy,
     )
     if not result.get("success"):
         # Nothing was delivered, so nothing is charged.
         try:
             db.refund_generation(wallet["wallet_address"], charged_pool)
             result["error"] = (result.get("error") or "Generation failed") + " You were not charged."
+            job_id = result.get("job_id")
+            if job_id:
+                try:
+                    # Mark refunded if the job was created and is in failed state.
+                    job = db.get_job(job_id)
+                    if job and (job.get("state") or "") == "failed":
+                        db.transition_job_state(job_id, "refunded")
+                except Exception:  # noqa: BLE001
+                    logger.exception("job state refunded transition failed", extra={"job_id": job_id})
         except Exception:  # noqa: BLE001 - never mask the real error with a refund problem
             logger.exception("refund failed", extra={"pool": charged_pool})
     return result

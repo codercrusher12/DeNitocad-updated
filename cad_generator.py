@@ -56,6 +56,8 @@ class CADGenerator:
         model: str | None = None,
         user_id: str = "default",
         formats: list[str] | None = None,
+        endpoint: str = "paid",
+        parse_policy: Any = None,
     ) -> dict[str, Any]:
         """
         Generate CAD from natural language description.
@@ -162,9 +164,34 @@ class CADGenerator:
             # Step 3: Generate CAD
             if params.part_type == "assembly":
                 export_paths = self._generate_assembly(description, resolved_formats)
+                workplane_for_verify = None
             else:
                 export_paths = self._generate_single_part(
                     params, validation_result, resolved_formats
+                )
+                # Rebuild briefly for verification when CQ is available;
+                # solid is optional so tests without CQ still pass.
+                workplane_for_verify = None
+                try:
+                    workplane_for_verify = self._build_workplane(
+                        params.part_type, params.parameters, warnings=[]
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("could not rebuild workplane for verification", exc_info=True)
+
+            # Step 3b: Post-build verification (fail-closed)
+            from geometry_verify import verify_geometry
+
+            stl_path = export_paths.get("stl")
+            vreport = verify_geometry(
+                solid=workplane_for_verify,
+                stl_path=stl_path,
+                expected=None,  # expected volume/bbox filled when compiler provides them
+            )
+            if not vreport.passed:
+                raise GeometryValidationError(
+                    "Post-build geometry verification failed: " + "; ".join(vreport.errors),
+                    details={"verification": vreport.to_dict()},
                 )
 
             # Upload each produced format to R2 if configured, otherwise
@@ -194,13 +221,15 @@ class CADGenerator:
                 used_deepseek=used_deepseek,
                 step_url=step_url,
                 stl_url=stl_url,
-                warnings=list(params.warnings) + list(validation_result.warnings),
+                warnings=list(params.warnings) + list(validation_result.warnings) + list(vreport.warnings),
                 corrections=validation_result.corrections,
                 parser=parser_name,
                 parser_model=parser_model,
                 prompt_version=prompt_version,
                 retry_count=retry_count,
                 parse_hash=parse_hash,
+                state="settled",
+                verification_report=vreport.to_dict(),
             )
 
             result = {
@@ -208,10 +237,11 @@ class CADGenerator:
                 "job_id": job_id,
                 "parameters": params.dict(),
                 "validation": {
-                    "warnings": list(params.warnings) + list(validation_result.warnings),
+                    "warnings": list(params.warnings) + list(validation_result.warnings) + list(vreport.warnings),
                     "errors": validation_result.errors,
                     "corrections": validation_result.corrections,
                 },
+                "verification": vreport.to_dict(),
                 "error": None,
                 "provenance": self._provenance(
                     parser_name, parser_model, prompt_version, retry_count, parse_hash
@@ -234,15 +264,19 @@ class CADGenerator:
             parser_model = d.get("model") or parser_model
             prompt_version = prompt_version or d.get("prompt_version")
             retry_count = retry_count or d.get("retry_count", 0)
-            db.record_job(
+            vrep = d.get("verification") if isinstance(d, dict) else None
+            job_id = db.record_job(
                 description=description, user_id=user_id, success=False,
                 used_deepseek=used_deepseek, error=exc.message,
                 parser=parser_name, parser_model=parser_model,
                 prompt_version=prompt_version, retry_count=retry_count,
                 parse_hash=parse_hash,
+                state="failed",
+                verification_report=vrep,
             )
             return {
                 "success": False,
+                "job_id": job_id,
                 "error": exc.message,
                 "error_type": type(exc).__name__,
                 "parameters": None,

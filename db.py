@@ -127,6 +127,11 @@ def init_db() -> None:
             "prompt_version": "TEXT",
             "retry_count": "INTEGER NOT NULL DEFAULT 0",
             "parse_hash": "TEXT",
+            # Job state machine (reserved → parsed → … → settled | failed → refunded)
+            "state": "TEXT NOT NULL DEFAULT 'reserved'",
+            "spec_version": "TEXT",
+            "kernel_version": "TEXT",
+            "verification_report": "TEXT",
         }.items():
             if column not in existing_job_columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {sql_type}")
@@ -391,10 +396,17 @@ def record_job(
     prompt_version: str | None = None,
     retry_count: int = 0,
     parse_hash: str | None = None,
+    state: str | None = None,
+    verification_report: dict | None = None,
+    spec_version: str | None = None,
+    kernel_version: str | None = None,
 ) -> str:
     """Persist one generation job and return its id (a uuid4 string, also
     used as the on-disk/R2 filename stem - see storage.py)."""
     job_id = str(uuid.uuid4())
+    # Default terminal states for the legacy one-shot insert path.
+    if state is None:
+        state = "settled" if success else "failed"
     with get_conn() as conn:
         conn.execute(
             """
@@ -402,8 +414,9 @@ def record_job(
                 id, user_id, description, part_type, parameters, material,
                 used_deepseek, success, error, step_url, stl_url,
                 warnings, corrections, parser, parser_model, prompt_version,
-                retry_count, parse_hash, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                retry_count, parse_hash, state, verification_report,
+                spec_version, kernel_version, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
@@ -424,6 +437,10 @@ def record_job(
                 prompt_version,
                 retry_count,
                 parse_hash,
+                state,
+                json.dumps(verification_report) if verification_report is not None else None,
+                spec_version,
+                kernel_version,
                 _now(),
             ),
         )
@@ -434,6 +451,115 @@ def get_job(job_id: str) -> dict[str, Any] | None:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Job state machine
+# States: reserved → parsed → spec_valid → built → verified → exported → settled
+# Failure path: * → failed → refunded
+# Each transition is persisted so a crash mid-way is recoverable and a refund
+# cannot be lost or doubled.
+# ---------------------------------------------------------------------------
+
+JOB_STATES = (
+    "reserved",
+    "parsed",
+    "spec_valid",
+    "built",
+    "verified",
+    "exported",
+    "settled",
+    "failed",
+    "refunded",
+)
+
+_ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
+    "reserved": frozenset({"parsed", "failed"}),
+    "parsed": frozenset({"spec_valid", "failed"}),
+    "spec_valid": frozenset({"built", "failed"}),
+    "built": frozenset({"verified", "failed"}),
+    "verified": frozenset({"exported", "failed"}),
+    "exported": frozenset({"settled", "failed"}),
+    "settled": frozenset(),
+    "failed": frozenset({"refunded"}),
+    "refunded": frozenset(),
+}
+
+
+def transition_job_state(
+    job_id: str,
+    new_state: str,
+    *,
+    verification_report: dict | None = None,
+    error: str | None = None,
+    spec_version: str | None = None,
+    kernel_version: str | None = None,
+    step_url: str | None = None,
+    stl_url: str | None = None,
+) -> None:
+    """Persist a state transition. Raises ValueError on illegal transition."""
+    if new_state not in JOB_STATES:
+        raise ValueError(f"Unknown job state: {new_state}")
+    with get_conn() as conn:
+        row = conn.execute("SELECT state FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Job not found: {job_id}")
+        current = row["state"] or "reserved"
+        allowed = _ALLOWED_TRANSITIONS.get(current, frozenset())
+        if new_state not in allowed:
+            raise ValueError(
+                f"Illegal job transition {current!r} → {new_state!r} for {job_id}"
+            )
+        sets = ["state = ?"]
+        vals: list[Any] = [new_state]
+        if verification_report is not None:
+            sets.append("verification_report = ?")
+            vals.append(json.dumps(verification_report))
+        if error is not None:
+            sets.append("error = ?")
+            vals.append(error)
+            sets.append("success = 0")
+        if spec_version is not None:
+            sets.append("spec_version = ?")
+            vals.append(spec_version)
+        if kernel_version is not None:
+            sets.append("kernel_version = ?")
+            vals.append(kernel_version)
+        if step_url is not None:
+            sets.append("step_url = ?")
+            vals.append(step_url)
+        if stl_url is not None:
+            sets.append("stl_url = ?")
+            vals.append(stl_url)
+        if new_state == "settled":
+            sets.append("success = 1")
+        if new_state == "refunded":
+            sets.append("success = 0")
+        vals.append(job_id)
+        conn.execute(
+            f"UPDATE jobs SET {', '.join(sets)} WHERE id = ?",
+            vals,
+        )
+
+
+def create_job_reserved(
+    *,
+    description: str,
+    user_id: str = "default",
+) -> str:
+    """Insert a job in state=reserved at the start of a paid generation."""
+    job_id = str(uuid.uuid4())
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO jobs (
+                id, user_id, description, used_deepseek, success, error,
+                state, created_at
+            ) VALUES (?, ?, ?, 0, 0, NULL, 'reserved', ?)
+            """,
+            (job_id, user_id, description, _now()),
+        )
+    return job_id
 
 
 def set_job_anchor_tx(job_id: str, tx_hash: str) -> None:
