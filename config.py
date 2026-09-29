@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # "*" (the old hardcoded default) allows any site to call the API
     # from a browser, which is fine for local dev only.
     CORS_ORIGINS: str = "*"
+    # HMAC key for the short-lived signed export-download links
+    # (POST /export/{fmt}/{job_id}/link). Optional: unset => a random
+    # per-process key (fine for one instance; set it for multi-replica).
+    DOWNLOAD_LINK_SECRET: str | None = None
 
     # --- Persistence ------------------------------------------------
     DB_PATH: str = "nl_to_cad.db"

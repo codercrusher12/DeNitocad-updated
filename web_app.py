@@ -1,6 +1,9 @@
 """
 Enhanced web interface with 3D preview.
 """
+import hashlib
+import hmac
+import secrets
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
@@ -95,6 +98,14 @@ app.add_middleware(
     allow_origins=settings.cors_origins_list,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Without this a cross-origin frontend (Vercel -> Railway) cannot read
+    # these response headers via fetch(), so filenames / anchor info are
+    # invisible to it even though the browser received them.
+    expose_headers=[
+        "Content-Disposition",
+        "X-NitoCAD-Anchor-Tx",
+        "X-NitoCAD-Explorer-Url",
+    ],
 )
 
 
@@ -1104,17 +1115,108 @@ async def root():
                 }
             }
 
+              // ===== Mobile-safe downloads (same helper on every page) =====
+              // Why: fetch()->blob-><a download>->revokeObjectURL() works on desktop but
+              // fails on phones (iOS Safari ignores `download` on blob: URLs, and the
+              // revoke cancels the save; after an await the tap gesture is gone, so
+              // share/download can silently no-op). Fix: the API hands back a short-lived
+              // signed URL served with Content-Disposition: attachment - a plain
+              // navigation every mobile browser can handle - and a "Tap to save" bar
+              // (a fresh, real tap) is shown as a backup on phones / in-app browsers.
+              const NITO_IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+              const NITO_IN_APP = /FBAN|FBAV|Instagram|Twitter|Telegram|MicroMessenger|TikTok|[;] wv[)]/i.test(navigator.userAgent);
+              let _nitoBarTimer = null, _nitoBarRevoke = null;
+
+              function nitoHideSaveBar(){
+                const el = document.getElementById('nitoSaveBar');
+                if (el) el.remove();
+                clearTimeout(_nitoBarTimer);
+                if (_nitoBarRevoke) { const u = _nitoBarRevoke; _nitoBarRevoke = null; setTimeout(() => URL.revokeObjectURL(u), 60000); }
+              }
+
+              function nitoShowSaveBar(url, filename, isBlob){
+                nitoHideSaveBar();
+                const bar = document.createElement('div');
+                bar.id = 'nitoSaveBar';
+                bar.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:99999;background:#111827;color:#fff;border-radius:14px;padding:12px 14px;display:flex;align-items:center;gap:10px;box-shadow:0 8px 30px rgba(0,0,0,.35);font:14px/1.3 system-ui,-apple-system,sans-serif;';
+                const txt = document.createElement('div');
+                txt.style.cssText = 'flex:1;min-width:0;word-break:break-all;';
+                txt.textContent = NITO_IN_APP
+                  ? 'Not saving? Open this page in Safari/Chrome. ' + filename
+                  : (isBlob ? 'Ready: ' : 'Download started. Not saving? ') + filename;
+                const a = document.createElement('a');
+                a.href = url;
+                a.textContent = 'Tap to save';
+                a.setAttribute('download', filename);
+                a.rel = 'noopener';
+                a.style.cssText = 'background:#13A57D;color:#fff;padding:9px 14px;border-radius:999px;font-weight:600;text-decoration:none;white-space:nowrap;';
+                a.addEventListener('click', () => setTimeout(nitoHideSaveBar, 1500));
+                const x = document.createElement('button');
+                x.type = 'button';
+                x.textContent = '\u2715';
+                x.setAttribute('aria-label', 'Dismiss');
+                x.style.cssText = 'background:none;border:0;color:#9ca3af;font-size:18px;padding:4px 6px;';
+                x.addEventListener('click', nitoHideSaveBar);
+                bar.append(txt, a, x);
+                document.body.appendChild(bar);
+                if (isBlob) _nitoBarRevoke = url;
+                _nitoBarTimer = setTimeout(nitoHideSaveBar, isBlob ? 300000 : 25000);
+              }
+
+              // Preferred path: the API returned a signed, short-lived URL that responds
+              // with Content-Disposition: attachment. Navigating to it downloads the file
+              // without leaving the page, on desktop and mobile alike.
+              function nitoDeliver(url, filename){
+                const a = document.createElement('a');
+                a.href = url;
+                a.rel = 'noopener';
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => a.remove(), 1000);
+                if (NITO_IS_MOBILE || NITO_IN_APP) nitoShowSaveBar(url, filename, false);
+              }
+
+              // Fallback for files we only have as a Blob (e.g. an owned STL fetched by
+              // filename). Mobile: Web Share (files) -> else "Tap to save" bar with a
+              // fresh gesture. Desktop: classic <a download> with a DELAYED revoke.
+              async function nitoBlobDownload(blob, filename){
+                if (NITO_IS_MOBILE && navigator.canShare && navigator.share) {
+                  try {
+                    const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
+                    if (navigator.canShare({ files: [file] })) {
+                      await navigator.share({ files: [file], title: filename });
+                      return;
+                    }
+                  } catch (e) {
+                    if (e && e.name === 'AbortError') return;   // user closed the share sheet
+                    // gesture expired / type not shareable -> fall through to the save bar
+                  }
+                }
+                const url = URL.createObjectURL(blob);
+                if (NITO_IS_MOBILE || NITO_IN_APP) { nitoShowSaveBar(url, filename, true); return; }
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 60000);
+              }
+              // ===== end mobile-safe downloads =====
+
             async function downloadFormat(fmt, jobId) {
-                // Can't use a plain <a href>/window.open here - the export
-                // route requires an Authorization: Bearer <session_id>
-                // header (see wallet_auth.get_current_wallet), and neither
-                // of those can set custom headers on a GET. fetch() + blob
-                // is the correct way to download an authenticated file,
-                // not a workaround.
+                // The export route needs an Authorization header, which a
+                // plain <a href> can't send - so: authenticated POST builds
+                // the file and returns a short-lived signed URL, then we
+                // navigate to it (Content-Disposition: attachment). That
+                // is what makes downloads work on phone browsers; the old
+                // fetch()->blob->revokeObjectURL() path only worked on
+                // desktop. See POST /export/{fmt}/{job_id}/link.
                 //
                 // No payment here - the job's original /generate payment
-                // already covers every export format pulled from it. See
-                // /export/{fmt}/{job_id}'s docstring in web_app.py.
+                // already covers every export format pulled from it.
                 const session = getWalletSession();
                 if (!session) { alert('Your wallet session expired - reconnect and regenerate to download.'); return; }
                 const btn = event.target;
@@ -1122,24 +1224,16 @@ async def root():
                 btn.disabled = true;
                 btn.textContent = 'Building...';
                 try {
-                    const resp = await fetch(`/export/${fmt}/${jobId}`, {
+                    const resp = await fetch(`/export/${fmt}/${jobId}/link`, {
+                        method: 'POST',
                         headers: { 'Authorization': 'Bearer ' + session.session_id },
                     });
                     if (!resp.ok) {
                         const err = await resp.json().catch(() => ({}));
                         throw new Error(err.detail || `Export failed (${resp.status})`);
                     }
-                    const blob = await resp.blob();
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    const cd = resp.headers.get('content-disposition') || '';
-                    const match = cd.match(/filename="?([^"]+)"?/);
-                    a.download = match ? match[1] : `${jobId}.${fmt}`;
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    URL.revokeObjectURL(url);
+                    const info = await resp.json();
+                    nitoDeliver(info.url, info.filename || `${jobId}.${fmt}`);
                 } catch (err) {
                     alert('Download failed: ' + err.message);
                 } finally {
@@ -1211,14 +1305,7 @@ async def root():
             async function downloadStl(filename) {
                 try {
                     const blob = await loadOwnedStl(`/download/stl/${filename}`);
-                    const objUrl = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = objUrl;
-                    a.download = filename;
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    URL.revokeObjectURL(objUrl);
+                    await nitoBlobDownload(blob, filename);
                 } catch (err) {
                     alert('Download failed: ' + err.message);
                 }
@@ -1446,7 +1533,9 @@ async def root():
                         };
                         html += '<div class="download-links">';
                         const stlFilename = data.stl_file.split('/').pop();
-                        html += `<button onclick="downloadStl('${stlFilename}')">📥 Download STL (mesh)</button>`;
+                        html += data.job_id
+                            ? `<button onclick="downloadFormat('stl','${data.job_id}')">📥 Download STL (mesh)</button>`
+                            : `<button onclick="downloadStl('${stlFilename}')">📥 Download STL (mesh)</button>`;
                         document.querySelectorAll('.fmt-checkbox').forEach(cb => {
                             if (cb.checked) {
                                 const label = formatLabels[cb.value];
@@ -1613,6 +1702,76 @@ async def generate_cad(
     return result
 
 
+_EXPORT_MEDIA_TYPES = {
+    "step": "application/step", "stl": "model/stl", "iges": "model/iges",
+    "dxf": "image/vnd.dxf", "pdf": "application/pdf",
+}
+
+# Phones (iOS Safari especially) save attachments reliably when the response
+# is a plain navigation with Content-Disposition: attachment, and struggle
+# with fetch()->blob-><a download>. But the export route needs an
+# Authorization header, which a navigation can't send. So the frontend calls
+# POST /export/{fmt}/{job_id}/link (authenticated) and gets back a short-lived
+# HMAC-signed URL for GET /export/{fmt}/{job_id}/file, which it simply opens.
+_DL_LINK_TTL_SECONDS = 300
+# Set DOWNLOAD_LINK_SECRET in the environment if you run more than one
+# process/replica (or want links to survive a restart); otherwise a random
+# per-process key is used, which is fine for a single Railway instance since
+# links only live 5 minutes.
+_DL_LINK_SECRET = (
+    (getattr(settings, "DOWNLOAD_LINK_SECRET", None) or "").encode()
+    or secrets.token_bytes(32)
+)
+
+
+def _dl_signature(job_id: str, fmt: str, owner: str, exp: int) -> str:
+    msg = f"{job_id}|{fmt}|{owner}|{exp}".encode()
+    return hmac.new(_DL_LINK_SECRET, msg, hashlib.sha256).hexdigest()
+
+
+def _make_dl_token(job_id: str, fmt: str, owner: str) -> str:
+    exp = int(time.time()) + _DL_LINK_TTL_SECONDS
+    return f"{exp}.{_dl_signature(job_id, fmt, owner, exp)}"
+
+
+def _verify_dl_token(job_id: str, fmt: str, owner: str, token: str) -> bool:
+    try:
+        exp_s, sig = token.split(".", 1)
+        exp = int(exp_s)
+    except (ValueError, AttributeError):
+        return False
+    if exp < int(time.time()):
+        return False
+    return hmac.compare_digest(sig, _dl_signature(job_id, fmt, owner, exp))
+
+
+def _anchor_info(job: dict) -> tuple[str | None, str | None]:
+    anchor_tx = job.get("anchor_tx")
+    if not anchor_tx:
+        return None, None
+    if not str(anchor_tx).startswith("0x"):
+        anchor_tx = "0x" + str(anchor_tx)
+    explorer = settings.botchain_explorer_url.rstrip("/")
+    return str(anchor_tx), f"{explorer}/tx/{anchor_tx}"
+
+
+def _build_export(fmt: str, job_id: str, owner_wallet: str | None):
+    """Shared by every export route: ownership check (skipped when
+    owner_wallet is None because a signed token already proved it), build
+    one format on demand, return (file_path, job_after)."""
+    job = db.get_job(job_id)
+    if job is None or (owner_wallet is not None and job["user_id"] != owner_wallet):
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        file_path, _part_type = generator.export_format_for_job(job_id, fmt)
+    except UnsupportedFormatError as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from exc
+    except GenerationError as exc:
+        raise HTTPException(status_code=500, detail=exc.message) from exc
+    # Re-read so a freshly written anchor_tx (STEP path only) is visible.
+    return file_path, (db.get_job(job_id) or job)
+
+
 @app.get("/export/{fmt}/{job_id}")
 @limiter.limit(settings.RATE_LIMIT_GENERATE)
 async def export_on_demand(
@@ -1628,49 +1787,70 @@ async def export_on_demand(
     POST /generate time already covers this job in full, including
     every export format pulled from it - a job isn't billed per
     format, it's billed once, at generation. Ownership is enough to
-    gate this: `job["user_id"] != wallet["wallet_address"]` below
-    already proves the caller is the same wallet that spent the credit
-    to create the job, so charging again would just be double-billing
-    work already paid for once. (This used to require its own tx_hash
-    and re-charge BOTCHAIN_PER_CALL_PRICE_BOT per format - that was the
-    bug reported as "charged 0.2 BOT per format on top of the 0.2 BOT
-    generation charge, for one job." Fixed here, not by discounting
-    anything.)"""
-    job = db.get_job(job_id)
-    if job is None or job["user_id"] != wallet["wallet_address"]:
-        raise HTTPException(status_code=404, detail="Job not found")
-    try:
-        file_path, _part_type = generator.export_format_for_job(job_id, fmt)
-    except UnsupportedFormatError as exc:
-        raise HTTPException(status_code=422, detail=exc.message) from exc
-    except GenerationError as exc:
-        raise HTTPException(status_code=500, detail=exc.message) from exc
+    gate this. (This used to re-charge per format on top of the
+    generation charge - that was the reported "double charge" bug.)
 
-    media_types = {
-        "step": "application/step", "stl": "model/stl", "iges": "model/iges",
-        "dxf": "image/vnd.dxf", "pdf": "application/pdf",
-    }
-    # Re-read the job so a freshly written anchor_tx (STEP path only) is
-    # visible on this same response. Exposed as response headers so the
-    # body stays a pure file download; the frontend reads these after
-    # fetch() and shows an explorer link to the customer.
-    job_after = db.get_job(job_id) or job
+    Kept for API/agent callers that can send an Authorization header.
+    Browsers - especially phones - should use POST .../link instead."""
+    file_path, job_after = _build_export(fmt, job_id, wallet["wallet_address"])
     headers = {}
-    anchor_tx = job_after.get("anchor_tx")
+    anchor_tx, explorer_url = _anchor_info(job_after)
     if anchor_tx:
-        if not str(anchor_tx).startswith("0x"):
-            anchor_tx = "0x" + str(anchor_tx)
-        explorer = settings.botchain_explorer_url.rstrip("/")
-        headers["X-NitoCAD-Anchor-Tx"] = str(anchor_tx)
-        headers["X-NitoCAD-Explorer-Url"] = f"{explorer}/tx/{anchor_tx}"
-        headers["Access-Control-Expose-Headers"] = (
-            "X-NitoCAD-Anchor-Tx, X-NitoCAD-Explorer-Url, Content-Disposition"
-        )
+        headers["X-NitoCAD-Anchor-Tx"] = anchor_tx
+        headers["X-NitoCAD-Explorer-Url"] = explorer_url
     return FileResponse(
         file_path,
-        media_type=media_types[fmt],
-        filename=file_path.name,
+        media_type=_EXPORT_MEDIA_TYPES.get(fmt, "application/octet-stream"),
+        filename=file_path.name,  # => Content-Disposition: attachment
         headers=headers,
+    )
+
+
+@app.post("/export/{fmt}/{job_id}/link")
+@limiter.limit(settings.RATE_LIMIT_GENERATE)
+async def export_link(
+    request: Request,
+    fmt: str,
+    job_id: str,
+    wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)],
+):
+    """Authenticated: build the export, then return a short-lived signed
+    URL the browser can simply navigate to (no Authorization header
+    needed, so it works as a plain download on iOS Safari / Android
+    Chrome). Ownership is checked here; the token binds job + format +
+    owner and expires after _DL_LINK_TTL_SECONDS."""
+    file_path, job_after = _build_export(fmt, job_id, wallet["wallet_address"])
+    token = _make_dl_token(job_id, fmt, wallet["wallet_address"])
+    anchor_tx, explorer_url = _anchor_info(job_after)
+    return {
+        "url": f"/export/{fmt}/{job_id}/file?t={token}",
+        "filename": file_path.name,
+        "expires_in": _DL_LINK_TTL_SECONDS,
+        "anchor_tx": anchor_tx,
+        "explorer_url": explorer_url,
+    }
+
+
+@app.get("/export/{fmt}/{job_id}/file")
+@limiter.limit(settings.RATE_LIMIT_GENERATE)
+async def export_file(request: Request, fmt: str, job_id: str, t: str = ""):
+    """Serve a file for a valid signed token from POST .../link. Always
+    Content-Disposition: attachment, generic binary type so mobile
+    browsers download instead of trying to render STEP/DXF inline."""
+    job = db.get_job(job_id)
+    # 404 (not 401/403) for every failure, same as the other export routes,
+    # so this can't be used to probe which job ids exist.
+    if job is None or fmt not in _EXPORT_MEDIA_TYPES or not _verify_dl_token(
+        job_id, fmt, job["user_id"], t
+    ):
+        raise HTTPException(status_code=404, detail="Link expired or invalid")
+    file_path, _ = _build_export(fmt, job_id, None)
+    media = "application/pdf" if fmt == "pdf" else "application/octet-stream"
+    return FileResponse(
+        file_path,
+        media_type=media,
+        filename=file_path.name,
+        headers={"Cache-Control": "private, no-store"},
     )
 
 
