@@ -8,7 +8,7 @@ from typing import Annotated, Any
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -1329,7 +1329,7 @@ async def root():
                         let html = renderResultBase(data);
                         html += '<div class="warning"><strong>This is a free STL-only preview.</strong> It isn\'t exportable to STEP/IGES/DXF/PDF later - use "Generate + Pay in BOT" above with the same description for a version you can export.</div>';
                         resultDiv.innerHTML = html;
-                        loadSTL(`/download/stl/${data.stl_file.split('/').pop()}`);
+                        loadSTL(data.job_id ? `/download/job/${data.job_id}/stl` : `/download/stl/${data.stl_file.split('/').pop()}`);
                     } else {
                         resultDiv.innerHTML = `<div class="error"><strong>✗ Error:</strong> ${data.error}</div>`;
                     }
@@ -1462,7 +1462,7 @@ async def root():
                         // unlike previewFree()'s call above which stays a
                         // bare loadSTL() since anonymous preview files are
                         // still public.
-                        loadOwnedStl(`/download/stl/${data.stl_file.split('/').pop()}`)
+                        loadOwnedStl(data.job_id ? `/download/job/${data.job_id}/stl` : `/download/stl/${data.stl_file.split('/').pop()}`)
                             .then(blob => loadSTL(URL.createObjectURL(blob)))
                             .catch(err => { resultDiv.innerHTML += `<div class="error"><strong>✗ Viewer failed:</strong> ${err.message}</div>`; });
                         
@@ -1675,9 +1675,58 @@ async def get_job(job_id: str, wallet: Annotated[dict, Depends(wallet_auth.get_c
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
+def _stream_from_url(url: str, media_type: str, filename: str) -> StreamingResponse:
+    """Proxy a remote object (typically an R2 presigned URL) through this
+    API so the browser never has to talk to R2 directly.
+
+    R2 buckets shared with other projects often lack a CORS rule for this
+    frontend origin. THREE.STLLoader fetches via XHR, which is subject to
+    CORS, so a direct load of the R2 URL fails even though a plain <a href>
+    download of the same URL works. Streaming through this backend (which
+    already allows CORS_ORIGINS=*) fixes the 3D preview without requiring
+    bucket-level CORS changes.
+    """
+    import httpx
+
+    try:
+        client = httpx.Client(timeout=60.0, follow_redirects=True)
+        upstream = client.send(
+            client.build_request("GET", url), stream=True
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502, detail=f"Upstream fetch failed: {exc}"
+        ) from exc
+
+    if upstream.status_code != 200:
+        upstream.close()
+        client.close()
+        raise HTTPException(
+            status_code=404,
+            detail=f"Remote file unavailable (HTTP {upstream.status_code})",
+        )
+
+    def iter_bytes():
+        try:
+            for chunk in upstream.iter_bytes():
+                yield chunk
+        finally:
+            upstream.close()
+            client.close()
+
+    return StreamingResponse(
+        iter_bytes(),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, max-age=300",
+        },
+    )
+
+
 def _resolve_owned_download(
     fmt: str, filename: str, wallet: dict | None, media_type: str
-) -> FileResponse:
+):
     """Shared body for the five GET /download/{fmt}/{filename} routes.
 
     These used to be open to anyone who had the URL (see git history
@@ -1696,17 +1745,83 @@ def _resolve_owned_download(
     - same 404-not-403 pattern GET /export/{fmt}/{job_id} already uses
     below, so this can't be used to distinguish "wrong owner" from
     "doesn't exist" either.
+
+    When the local file is gone (Railway ephemeral disk after restart,
+    or multi-replica where the generating instance is not the one
+    serving the download) but the job still has a durable R2 URL, we
+    proxy that URL so the 3D viewer keeps working.
     """
     file_path = safe_output_path(generator.output_dir, filename)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-
     owner = db.find_job_owner(filename)
+
+    if file_path.exists():
+        if owner is not None and owner != "anonymous":
+            if wallet is None or owner != wallet["wallet_address"]:
+                raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(file_path, media_type=media_type, filename=file_path.name)
+
+    # Local miss → try R2 via the job record. find_job_by_local_filename
+    # matches the local stem against jobs.parameters / stored URLs.
+    remote_url = db.find_remote_url_for_filename(filename, fmt)
+    if remote_url and remote_url.startswith("http"):
+        if owner is not None and owner != "anonymous":
+            if wallet is None or owner != wallet["wallet_address"]:
+                raise HTTPException(status_code=404, detail="File not found")
+        return _stream_from_url(remote_url, media_type, filename)
+
+    raise HTTPException(status_code=404, detail="File not found")
+
+
+@app.get("/download/job/{job_id}/{fmt}")
+async def download_job_format(
+    job_id: str,
+    fmt: str,
+    wallet: Annotated[dict | None, Depends(wallet_auth.get_current_wallet_optional)],
+):
+    """Serve a job's CAD artifact by job_id.
+
+    Prefer local disk; fall back to proxying the durable R2 URL stored on
+    the job row. Used by the 3D preview viewer so it never has to fetch
+    R2 cross-origin (R2 CORS is not configured for this frontend).
+    """
+    media_types = {
+        "step": "application/step",
+        "stl": "model/stl",
+        "iges": "model/iges",
+        "dxf": "image/vnd.dxf",
+        "pdf": "application/pdf",
+    }
+    if fmt not in media_types:
+        raise HTTPException(status_code=422, detail=f"Unsupported format: {fmt}")
+
+    job = db.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    owner = job.get("user_id") or "anonymous"
     if owner != "anonymous":
         if wallet is None or owner != wallet["wallet_address"]:
-            raise HTTPException(status_code=404, detail="File not found")
+            raise HTTPException(status_code=404, detail="Job not found")
 
-    return FileResponse(file_path, media_type=media_type, filename=file_path.name)
+    # Prefer durable R2 URL on the job row (local disk is ephemeral on Railway).
+    url_col = f"{fmt}_url"
+    remote_url = job.get(url_col)
+
+    if remote_url:
+        if remote_url.startswith("/download/"):
+            # Local-only fallback path stored when R2 wasn't configured
+            filename = remote_url.rstrip("/").split("/")[-1]
+            file_path = safe_output_path(generator.output_dir, filename)
+            if file_path.exists():
+                return FileResponse(
+                    file_path, media_type=media_types[fmt], filename=file_path.name
+                )
+            raise HTTPException(status_code=404, detail="File not found")
+        if remote_url.startswith("http"):
+            filename = remote_url.split("?")[0].rstrip("/").split("/")[-1] or f"{job_id}.{fmt}"
+            return _stream_from_url(remote_url, media_types[fmt], filename)
+
+    raise HTTPException(status_code=404, detail="File not found")
 
 
 @app.get("/download/step/{filename}")

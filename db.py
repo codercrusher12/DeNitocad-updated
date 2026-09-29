@@ -335,6 +335,25 @@ def get_job(job_id: str) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
+def find_remote_url_for_filename(filename: str, fmt: str) -> str | None:
+    """Best-effort lookup of a durable URL for a local output filename.
+
+    Local files are named ``{part_type}_{uuid}.stl`` while R2 keys use a
+    different uuid, so object-key matching is impossible. When the stored
+    URL itself still ends with the local filename (the non-R2 fallback
+    path ``/download/{fmt}/{filename}``), return that. Otherwise return
+    None — callers with a job_id should use GET /download/job/{job_id}/{fmt}.
+    """
+    col = "stl_url" if fmt == "stl" else "step_url"
+    with get_conn() as conn:
+        row = conn.execute(
+            f"SELECT {col} AS url FROM jobs WHERE {col} LIKE ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (f"%/{filename}%",),
+        ).fetchone()
+        return row["url"] if row and row["url"] else None
+
+
 def list_jobs(user_id: str = "default", limit: int = 50) -> list[dict[str, Any]]:
     with get_conn() as conn:
         rows = conn.execute(
