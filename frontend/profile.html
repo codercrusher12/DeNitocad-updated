@@ -173,6 +173,18 @@
     overflow-wrap:break-word;
   }
   .job-error{color:var(--orange-deep);}
+  .job-anchor{
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    margin-top:16px;padding:12px 14px;border-radius:12px;
+    background:rgba(19,165,125,.07);border:1px solid rgba(19,165,125,.25);
+    font-size:.85rem;
+  }
+  .job-anchor.pending{background:rgba(11,37,69,.04);border-color:var(--line);}
+  .job-anchor.idle{background:transparent;border-style:dashed;border-color:var(--line);color:var(--ink-soft);}
+  .job-anchor-main{flex:1;min-width:0;}
+  .job-anchor-title{font-weight:600;}
+  .job-anchor-tx{font-family:'IBM Plex Mono',monospace;font-size:.74rem;color:var(--ink-soft);word-break:break-all;margin-top:2px;}
+  .job-anchor .btn{padding:7px 15px;font-size:.76rem;white-space:nowrap;}
   .job-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;}
   .job-actions .btn{padding:7px 15px;font-size:.76rem;}
 
@@ -538,15 +550,19 @@
         throw new Error(err.detail || `Export failed (HTTP ${resp.status}).`);
       }
       const info = await resp.json();
-      const anchorTx = info.anchor_tx;
-      const explorerUrl = info.explorer_url;
       // 2) plain navigation to an attachment URL - works on phones
       nitoDeliver(base + info.url, info.filename || `${jobId}.${fmt}`);
-      if (anchorTx && explorerUrl) {
-        if (confirm('STEP saved. Open on-chain proof on the explorer?')) {
-          window.open(explorerUrl, '_blank', 'noopener');
+      // 3) THEN the on-chain anchor (STEP only): the server submits it after
+      //    this response, and the tx link appears under the project.
+      if (fmt === 'step') {
+        if (info.anchor_tx) {
+          setAnchorState(jobId, 'done', info.anchor_tx, info.explorer_url);
+        } else if (info.anchoring) {
+          setAnchorState(jobId, 'pending');
+          pollAnchor(base, session, jobId);
+        } else if (info.anchor_enabled === false) {
+          setAnchorState(jobId, 'off');
         }
-        loadJobs(base, session);
       }
     } catch (err) {
       alert('Download failed: ' + err.message);
@@ -578,6 +594,62 @@
     return div.innerHTML;
   }
 
+
+  // ---- on-chain anchor row, shown right under each project ----
+  function shortTx(tx){ return tx ? tx.slice(0, 10) + '…' + tx.slice(-8) : ''; }
+
+  function anchorMarkup(state, tx, url){
+    if (state === 'done' && tx) {
+      return `<div class="job-anchor">
+        <span aria-hidden="true">⛓</span>
+        <div class="job-anchor-main">
+          <div class="job-anchor-title">Anchored on BOT Chain</div>
+          <div class="job-anchor-tx" title="${escapeHtml(tx)}">Tx ${escapeHtml(shortTx(tx))}</div>
+        </div>
+        <a class="btn btn-primary" href="${escapeHtml(url || '#')}" target="_blank" rel="noopener">View transaction →</a>
+      </div>`;
+    }
+    if (state === 'pending') {
+      return `<div class="job-anchor pending"><span aria-hidden="true">⏳</span>
+        <div class="job-anchor-main"><div class="job-anchor-title">Anchoring on-chain…</div>
+        <div class="job-anchor-tx">Your download has started. The transaction link appears here in a few seconds.</div></div></div>`;
+    }
+    if (state === 'slow') {
+      return `<div class="job-anchor pending"><span aria-hidden="true">⏳</span>
+        <div class="job-anchor-main"><div class="job-anchor-title">Anchor submitted, still confirming</div>
+        <div class="job-anchor-tx">Refresh this page in a minute to see the transaction link.</div></div></div>`;
+    }
+    if (state === 'off') {
+      return `<div class="job-anchor idle"><span aria-hidden="true">⛓</span>
+        <div class="job-anchor-main">On-chain anchoring isn't enabled on the server yet.</div></div>`;
+    }
+    return `<div class="job-anchor idle"><span aria-hidden="true">⛓</span>
+      <div class="job-anchor-main">Not anchored yet. Download the STEP file and the design is anchored on-chain automatically.</div></div>`;
+  }
+
+  function setAnchorState(jobId, state, tx, url){
+    const el = document.getElementById('anchor-' + jobId);
+    if (el) el.innerHTML = anchorMarkup(state, tx, url);
+  }
+
+  async function pollAnchor(base, session, jobId){
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        const r = await fetch(`${base}/api/jobs/${jobId}/provenance`, {
+          headers: { 'Authorization': 'Bearer ' + session.session_id },
+        });
+        if (!r.ok) continue;
+        const d = await r.json();
+        if (d.anchored && d.anchor_tx) {
+          setAnchorState(jobId, 'done', d.anchor_tx, d.explorer_tx_url);
+          return;
+        }
+      } catch (e) { /* keep polling */ }
+    }
+    setAnchorState(jobId, 'slow');
+  }
+
   function renderJobCard(base, job){
     let params = {};
     try { params = job.parameters ? JSON.parse(job.parameters) : {}; } catch(e) { /* leave empty */ }
@@ -596,27 +668,20 @@
           `<button class="btn btn-ghost" onclick="downloadFormat('${base}','${fmt}','${job.id}',event)">↓ ${fmt.toUpperCase()}</button>`
         ).join('')
       : '';
-    let anchorTx = job.anchor_tx || '';
-    if (anchorTx && !anchorTx.startsWith('0x')) anchorTx = '0x' + anchorTx;
-    const explorerBase = (window.__nitocadExplorer || 'https://scan.botchain.ai').replace(/\/$/, '');
-    const provenance = anchorTx
-      ? `<a class="btn btn-primary" href="${explorerBase}/tx/${anchorTx}" target="_blank" rel="noopener" title="${escapeHtml(anchorTx)}">On-chain proof →</a>`
-      : (job.success
-          ? `<span class="job-meta" style="align-self:center;">Export STEP to anchor on-chain</span>`
-          : '');
     return `
       <div class="job-card">
         <div class="job-card-head">
           <div>
             <div class="job-part-type">${escapeHtml(job.part_type || 'part')}</div>
-            <div class="job-meta">${escapeHtml(dateText)}${job.used_deepseek ? ' · DeepSeek' : ''}${anchorTx ? ' · anchored' : ''}</div>
+            <div class="job-meta">${escapeHtml(dateText)}${job.used_deepseek ? ' · DeepSeek' : ''}${job.anchor_tx ? ' · anchored' : ''}</div>
           </div>
           ${badge}
         </div>
         <p class="job-desc">${escapeHtml(job.description)}</p>
         ${paramsText ? `<div class="job-params">${escapeHtml(paramsText)}</div>` : ''}
         ${job.error ? `<div class="job-params job-error">${escapeHtml(job.error)}</div>` : ''}
-        <div class="job-actions">${stlLink}${exportButtons}${provenance}</div>
+        <div class="job-actions">${stlLink}${exportButtons}</div>
+        ${job.success ? `<div class="job-anchor-slot" id="anchor-${job.id}">${anchorMarkup(job.anchor_tx ? 'done' : (job.anchor_enabled === false ? 'off' : 'idle'), job.anchor_tx, job.anchor_explorer_url)}</div>` : ''}
       </div>
     `;
   }

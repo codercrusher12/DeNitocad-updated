@@ -1450,11 +1450,32 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
       nitoDeliver(base + info.url, info.filename || `${jobId}.${fmt}`);
       if (anchorTx && explorerUrl) {
         showProvenanceBanner(jobId, anchorTx, explorerUrl);
-      } else if (fmt === 'step') {
-        // STEP path is what triggers anchoring; if the anchor is missing
-        // the env may still be unset - give a gentle status note.
+      } else if (fmt === 'step' && info.anchoring) {
+        // The download has started; the server now submits the on-chain
+        // anchor. Poll briefly for the tx and show the banner when it lands.
         statusEl.classList.remove('err');
-        statusEl.textContent = 'STEP downloaded. On-chain anchor will appear once DESIGN_REGISTRY_ADDRESS and the anchor wallet are configured.';
+        statusEl.textContent = 'STEP downloading - anchoring on-chain…';
+        (async () => {
+          for (let i = 0; i < 15; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            try {
+              const r = await fetch(`${base}/api/jobs/${jobId}/provenance`, {
+                headers: { 'Authorization': 'Bearer ' + session.session_id },
+              });
+              if (!r.ok) continue;
+              const d = await r.json();
+              if (d.anchored && d.anchor_tx) {
+                statusEl.textContent = 'STEP downloaded and anchored on-chain.';
+                showProvenanceBanner(jobId, d.anchor_tx, d.explorer_tx_url);
+                return;
+              }
+            } catch (e) { /* keep polling */ }
+          }
+          statusEl.textContent = 'STEP downloaded. Anchor still confirming - see My Projects in a minute.';
+        })();
+      } else if (fmt === 'step') {
+        statusEl.classList.remove('err');
+        statusEl.textContent = 'STEP downloaded. On-chain anchoring is not enabled on the server yet.';
       }
     } catch (err) {
       alert('Download failed: ' + err.message);
