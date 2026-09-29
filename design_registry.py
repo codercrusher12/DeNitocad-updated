@@ -37,6 +37,7 @@ from pathlib import Path
 
 from web3 import Web3
 
+import db
 from config import settings
 from logging_config import get_logger
 
@@ -138,11 +139,20 @@ def anchor_design(
         # person downloading. The tx hash is logged; confirming it
         # actually landed is a separate, later concern, not this
         # request's problem to solve.
+        tx_hex = tx_hash.hex()
+        if not tx_hex.startswith("0x"):
+            tx_hex = "0x" + tx_hex
+        try:
+            db.set_job_anchor_tx(job_id, tx_hex)
+        except Exception:  # noqa: BLE001 - never fail the export on a DB write
+            logger.exception(
+                "failed to persist anchor_tx on job", extra={"job_id": job_id}
+            )
         logger.info(
             "design anchor submitted",
-            extra={"job_id": job_id, "anchor_tx": tx_hash.hex()},
+            extra={"job_id": job_id, "anchor_tx": tx_hex},
         )
-        return tx_hash.hex()
+        return tx_hex
     except Exception:  # noqa: BLE001 - anchoring must never break a paid export
         logger.exception(
             "design anchor failed, export still proceeds", extra={"job_id": job_id}

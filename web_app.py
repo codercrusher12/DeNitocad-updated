@@ -1650,7 +1650,95 @@ async def export_on_demand(
         "step": "application/step", "stl": "model/stl", "iges": "model/iges",
         "dxf": "image/vnd.dxf", "pdf": "application/pdf",
     }
-    return FileResponse(file_path, media_type=media_types[fmt], filename=file_path.name)
+    # Re-read the job so a freshly written anchor_tx (STEP path only) is
+    # visible on this same response. Exposed as response headers so the
+    # body stays a pure file download; the frontend reads these after
+    # fetch() and shows an explorer link to the customer.
+    job_after = db.get_job(job_id) or job
+    headers = {}
+    anchor_tx = job_after.get("anchor_tx")
+    if anchor_tx:
+        if not str(anchor_tx).startswith("0x"):
+            anchor_tx = "0x" + str(anchor_tx)
+        explorer = settings.botchain_explorer_url.rstrip("/")
+        headers["X-NitoCAD-Anchor-Tx"] = str(anchor_tx)
+        headers["X-NitoCAD-Explorer-Url"] = f"{explorer}/tx/{anchor_tx}"
+        headers["Access-Control-Expose-Headers"] = (
+            "X-NitoCAD-Anchor-Tx, X-NitoCAD-Explorer-Url, Content-Disposition"
+        )
+    return FileResponse(
+        file_path,
+        media_type=media_types[fmt],
+        filename=file_path.name,
+        headers=headers,
+    )
+
+
+@app.get("/api/jobs/{job_id}/provenance")
+async def job_provenance(
+    job_id: str,
+    wallet: Annotated[dict, Depends(wallet_auth.get_current_wallet)],
+):
+    """Customer-facing on-chain proof for one job.
+
+    Returns the DesignRegistry anchor transaction (if STEP was exported
+    and anchoring succeeded), plus a direct explorer URL and the
+    parameters that were hashed on-chain. Wallet/email session must own
+    the job - same gate as GET /api/jobs/{job_id}.
+    """
+    job = db.get_job(job_id)
+    if job is None or job["user_id"] != wallet["wallet_address"]:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    anchor_tx = job.get("anchor_tx")
+    explorer = settings.botchain_explorer_url.rstrip("/")
+    explorer_tx = None
+    if anchor_tx:
+        if not str(anchor_tx).startswith("0x"):
+            anchor_tx = "0x" + str(anchor_tx)
+        explorer_tx = f"{explorer}/tx/{anchor_tx}"
+
+    params = job.get("parameters")
+    if isinstance(params, str):
+        try:
+            import json as _json
+            params = _json.loads(params)
+        except Exception:
+            pass
+
+    return {
+        "job_id": job_id,
+        "part_type": job.get("part_type"),
+        "parameters": params,
+        "anchored": bool(anchor_tx),
+        "anchor_tx": anchor_tx,
+        "explorer_tx_url": explorer_tx,
+        "registry_address": settings.DESIGN_REGISTRY_ADDRESS,
+        "explorer_registry_url": (
+            f"{explorer}/address/{settings.DESIGN_REGISTRY_ADDRESS}"
+            if settings.DESIGN_REGISTRY_ADDRESS
+            else None
+        ),
+        "chain": {
+            "name": (
+                "BOT Chain Testnet"
+                if settings.BOTCHAIN_ENVIRONMENT == "testnet"
+                else "BOT Chain"
+            ),
+            "chain_id_hex": settings.botchain_chain_id_hex,
+            "explorer_url": explorer,
+        },
+        "note": (
+            "On-chain provenance is written when you export STEP for a paid job. "
+            "The record includes part type, parameter hash, template version, "
+            "and keccak256 of the STEP file. Full parameters are in the event log."
+            if anchor_tx
+            else (
+                "Not anchored yet. Generate a paid job, then export STEP. "
+                "Free STL preview never writes on-chain."
+            )
+        ),
+    }
 
 
 @app.get("/api/jobs")

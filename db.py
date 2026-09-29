@@ -99,6 +99,7 @@ def init_db() -> None:
                 stl_url TEXT,
                 warnings TEXT,
                 corrections TEXT,
+                anchor_tx TEXT,
                 created_at TEXT NOT NULL
             )
             """
@@ -243,6 +244,9 @@ def init_db() -> None:
             "ALTER TABLE subscriptions ADD COLUMN paystack_customer_code TEXT",
             "ALTER TABLE subscriptions ADD COLUMN paystack_subscription_code TEXT",
             "ALTER TABLE subscriptions ADD COLUMN paystack_plan_code TEXT",
+            # On-chain provenance tx hash (DesignRegistry.anchorDesign) - set
+            # after a paid STEP export succeeds. Existing DBs lack this column.
+            "ALTER TABLE jobs ADD COLUMN anchor_tx TEXT",
         ):
             try:
                 conn.execute(column_sql)
@@ -333,6 +337,17 @@ def get_job(job_id: str) -> dict[str, Any] | None:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return dict(row) if row else None
+
+
+def set_job_anchor_tx(job_id: str, tx_hash: str) -> None:
+    """Persist the DesignRegistry anchor transaction hash on the job row
+    so the customer can open it on the explorer later (My Projects, STEP
+    export response headers). Idempotent: later calls overwrite."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET anchor_tx = ? WHERE id = ?",
+            (tx_hash, job_id),
+        )
 
 
 def find_remote_url_for_filename(filename: str, fmt: str) -> str | None:
