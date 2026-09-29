@@ -655,7 +655,13 @@
     try { params = job.parameters ? JSON.parse(job.parameters) : {}; } catch(e) { /* leave empty */ }
     const paramsText = Object.entries(params).map(([k, v]) => `${k}: ${v}`).join('   ·   ');
     let dateText = job.created_at;
-    try { dateText = new Date(job.created_at + 'Z').toLocaleString(); } catch(e) { /* keep raw */ }
+    try {
+      let raw = String(job.created_at || '');
+      // Backend stores ISO with an offset (+00:00). Only add Z for naive strings.
+      if (raw && !/(Z|[+-]\d{2}:?\d{2})$/.test(raw)) raw += 'Z';
+      const d = new Date(raw);
+      dateText = isNaN(d.getTime()) ? '' : d.toLocaleString();
+    } catch(e) { dateText = ''; }
     const badge = job.success
       ? '<span class="job-badge ok">done</span>'
       : '<span class="job-badge fail">failed</span>';
