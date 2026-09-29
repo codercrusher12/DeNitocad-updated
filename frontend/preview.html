@@ -616,14 +616,15 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
       warningsEl.innerHTML = html;
     }
 
-    // Same CORS lesson as index.html's demo section: always load the
-    // viewer from this backend's own /download/stl/{filename}, never
-    // from an R2 URL directly - see that file's renderResult for the
-    // full explanation. Free previews are unauthenticated either way.
+    // Prefer the job-id proxy so the viewer works even when the local
+    // file is gone (Railway ephemeral disk) and R2 has no CORS rule for
+    // this origin. THREE.STLLoader uses XHR, so it cannot load R2 URLs
+    // directly; the backend streams the object with CORS already open.
+    const jobStlUrl = data.job_id ? `${base}/download/job/${data.job_id}/stl` : null;
     const localStlUrl = data.stl_file
       ? `${base}/download/stl/${data.stl_file.split('/').pop()}`
       : null;
-    loadSTL(localStlUrl);
+    loadSTL(jobStlUrl || localStlUrl);
   }
 
   previewBtn.addEventListener('click', async function(){
