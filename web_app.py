@@ -46,6 +46,11 @@ async def lifespan(app: FastAPI):
         "starting nitocad api",
         extra={"environment": settings.ENVIRONMENT, "r2_configured": settings.r2_configured},
     )
+    try:
+        import design_registry
+        design_registry.log_anchoring_status()
+    except Exception:  # noqa: BLE001 - diagnostics must never block startup
+        logger.exception("could not log anchoring status")
     # fastmcp's Streamable HTTP transport needs its own session manager
     # running for the lifetime of the app (this is what makes /mcp actually
     # answer instead of 404) - the plain @app.on_event("startup") hook this

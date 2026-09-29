@@ -62,27 +62,112 @@ except ImportError:
 REPO_ROOT = Path(__file__).resolve().parent
 ABI_PATH = REPO_ROOT / "contracts" / "DesignRegistry.abi.json"
 
+_EMBEDDED_ABI = [
+    {
+        "type": "function", "name": "anchorDesign", "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "jobId", "type": "bytes32"},
+            {"name": "partType", "type": "string"},
+            {"name": "parametersHash", "type": "bytes32"},
+            {"name": "parameters", "type": "string"},
+            {"name": "templateVersion", "type": "string"},
+            {"name": "outputHash", "type": "bytes32"},
+        ],
+        "outputs": [],
+    },
+    {
+        "type": "function", "name": "getDesign", "stateMutability": "view",
+        "inputs": [{"name": "jobId", "type": "bytes32"}],
+        "outputs": [{
+            "name": "", "type": "tuple",
+            "components": [
+                {"name": "partType", "type": "string"},
+                {"name": "parametersHash", "type": "bytes32"},
+                {"name": "templateVersion", "type": "string"},
+                {"name": "outputHash", "type": "bytes32"},
+                {"name": "timestamp", "type": "uint256"},
+                {"name": "submitter", "type": "address"},
+            ],
+        }],
+    },
+    {
+        "type": "function", "name": "isAnchored", "stateMutability": "view",
+        "inputs": [{"name": "jobId", "type": "bytes32"}],
+        "outputs": [{"name": "", "type": "bool"}],
+    },
+    {
+        "type": "function", "name": "designs", "stateMutability": "view",
+        "inputs": [{"name": "", "type": "bytes32"}],
+        "outputs": [
+            {"name": "partType", "type": "string"},
+            {"name": "parametersHash", "type": "bytes32"},
+            {"name": "templateVersion", "type": "string"},
+            {"name": "outputHash", "type": "bytes32"},
+            {"name": "timestamp", "type": "uint256"},
+            {"name": "submitter", "type": "address"},
+        ],
+    },
+    {
+        "type": "event", "name": "DesignAnchored", "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "jobId", "type": "bytes32"},
+            {"indexed": False, "name": "partType", "type": "string"},
+            {"indexed": False, "name": "parametersHash", "type": "bytes32"},
+            {"indexed": False, "name": "parameters", "type": "string"},
+            {"indexed": False, "name": "templateVersion", "type": "string"},
+            {"indexed": False, "name": "outputHash", "type": "bytes32"},
+            {"indexed": False, "name": "timestamp", "type": "uint256"},
+            {"indexed": False, "name": "submitter", "type": "address"},
+        ],
+    },
+]
+
 _abi_cache = None
 
 
 def _load_abi():
+    """Embedded ABI is the default so a live contract works without any
+    committed file. contracts/DesignRegistry.abi.json, if present, is an
+    optional override."""
     global _abi_cache
     if _abi_cache is None:
-        if not ABI_PATH.exists():
-            return None
-        _abi_cache = json.loads(ABI_PATH.read_text())
+        _abi_cache = _EMBEDDED_ABI
+        if ABI_PATH.exists():
+            try:
+                _abi_cache = json.loads(ABI_PATH.read_text())
+            except Exception:  # noqa: BLE001
+                logger.exception("bad ABI override file, using embedded ABI")
     return _abi_cache
 
 
+def anchoring_status() -> dict:
+    """Which pieces are configured. Never exposes secret values."""
+    addr = settings.DESIGN_REGISTRY_ADDRESS
+    return {
+        "registry_address": bool(addr),
+        "registry_address_valid": bool(addr) and Web3.is_address(addr),
+        "anchor_wallet_key": bool(settings.ANCHOR_WALLET_PRIVATE_KEY),
+        "rpc_url": bool(settings.botchain_rpc_url),
+        "environment": settings.BOTCHAIN_ENVIRONMENT,
+    }
+
+
+def log_anchoring_status() -> None:
+    st = anchoring_status()
+    missing = [k for k in ("registry_address", "anchor_wallet_key", "rpc_url") if not st[k]]
+    if st["registry_address"] and not st["registry_address_valid"]:
+        missing.append("registry_address_valid")
+    if missing:
+        logger.warning("anchoring DISABLED, missing/invalid: %s", ", ".join(missing), extra=st)
+    else:
+        logger.info("anchoring ENABLED on %s", st["environment"], extra=st)
+
+
 def anchoring_available() -> bool:
-    """True only if an anchor call can actually succeed: registry address,
-    anchor wallet key AND the committed ABI file are all present. The UI
-    uses this to say "anchoring isn't enabled" instead of spinning."""
-    return bool(
-        settings.DESIGN_REGISTRY_ADDRESS
-        and settings.ANCHOR_WALLET_PRIVATE_KEY
-        and _load_abi() is not None
-    )
+    """True when registry address, anchor wallet key and RPC URL are all
+    set. The ABI is embedded, so no file is required."""
+    st = anchoring_status()
+    return st["registry_address_valid"] and st["anchor_wallet_key"] and st["rpc_url"]
 
 
 def _raw_tx_bytes(signed_tx) -> bytes:
@@ -103,17 +188,10 @@ def anchor_design(
     ANCHOR_WALLET_PRIVATE_KEY unset, or the ABI hasn't been generated
     yet by scripts/deploy_design_registry.py). Never raises - see
     module docstring."""
-    if not settings.DESIGN_REGISTRY_ADDRESS or not settings.ANCHOR_WALLET_PRIVATE_KEY:
+    if not anchoring_available():
         return None
 
     abi = _load_abi()
-    if abi is None:
-        logger.warning(
-            "DESIGN_REGISTRY_ADDRESS is set but contracts/DesignRegistry.abi.json "
-            "is missing - run scripts/deploy_design_registry.py and commit its "
-            "output first."
-        )
-        return None
 
     try:
         w3 = Web3(Web3.HTTPProvider(settings.botchain_rpc_url))
