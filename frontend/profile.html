@@ -426,33 +426,122 @@
     return data.balance;
   }
 
+  // ===== Mobile-safe downloads (same helper on every page) =====
+  // Why: fetch()->blob-><a download>->revokeObjectURL() works on desktop but
+  // fails on phones (iOS Safari ignores `download` on blob: URLs, and the
+  // revoke cancels the save; after an await the tap gesture is gone, so
+  // share/download can silently no-op). Fix: the API hands back a short-lived
+  // signed URL served with Content-Disposition: attachment - a plain
+  // navigation every mobile browser can handle - and a "Tap to save" bar
+  // (a fresh, real tap) is shown as a backup on phones / in-app browsers.
+  const NITO_IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const NITO_IN_APP = /FBAN|FBAV|Instagram|Twitter|Telegram|MicroMessenger|TikTok|[;] wv[)]/i.test(navigator.userAgent);
+  let _nitoBarTimer = null, _nitoBarRevoke = null;
+
+  function nitoHideSaveBar(){
+    const el = document.getElementById('nitoSaveBar');
+    if (el) el.remove();
+    clearTimeout(_nitoBarTimer);
+    if (_nitoBarRevoke) { const u = _nitoBarRevoke; _nitoBarRevoke = null; setTimeout(() => URL.revokeObjectURL(u), 60000); }
+  }
+
+  function nitoShowSaveBar(url, filename, isBlob){
+    nitoHideSaveBar();
+    const bar = document.createElement('div');
+    bar.id = 'nitoSaveBar';
+    bar.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:99999;background:#111827;color:#fff;border-radius:14px;padding:12px 14px;display:flex;align-items:center;gap:10px;box-shadow:0 8px 30px rgba(0,0,0,.35);font:14px/1.3 system-ui,-apple-system,sans-serif;';
+    const txt = document.createElement('div');
+    txt.style.cssText = 'flex:1;min-width:0;word-break:break-all;';
+    txt.textContent = NITO_IN_APP
+      ? 'Not saving? Open this page in Safari/Chrome. ' + filename
+      : (isBlob ? 'Ready: ' : 'Download started. Not saving? ') + filename;
+    const a = document.createElement('a');
+    a.href = url;
+    a.textContent = 'Tap to save';
+    a.setAttribute('download', filename);
+    a.rel = 'noopener';
+    a.style.cssText = 'background:#13A57D;color:#fff;padding:9px 14px;border-radius:999px;font-weight:600;text-decoration:none;white-space:nowrap;';
+    a.addEventListener('click', () => setTimeout(nitoHideSaveBar, 1500));
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.textContent = '\u2715';
+    x.setAttribute('aria-label', 'Dismiss');
+    x.style.cssText = 'background:none;border:0;color:#9ca3af;font-size:18px;padding:4px 6px;';
+    x.addEventListener('click', nitoHideSaveBar);
+    bar.append(txt, a, x);
+    document.body.appendChild(bar);
+    if (isBlob) _nitoBarRevoke = url;
+    _nitoBarTimer = setTimeout(nitoHideSaveBar, isBlob ? 300000 : 25000);
+  }
+
+  // Preferred path: the API returned a signed, short-lived URL that responds
+  // with Content-Disposition: attachment. Navigating to it downloads the file
+  // without leaving the page, on desktop and mobile alike.
+  function nitoDeliver(url, filename){
+    const a = document.createElement('a');
+    a.href = url;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => a.remove(), 1000);
+    if (NITO_IS_MOBILE || NITO_IN_APP) nitoShowSaveBar(url, filename, false);
+  }
+
+  // Fallback for files we only have as a Blob (e.g. an owned STL fetched by
+  // filename). Mobile: Web Share (files) -> else "Tap to save" bar with a
+  // fresh gesture. Desktop: classic <a download> with a DELAYED revoke.
+  async function nitoBlobDownload(blob, filename){
+    if (NITO_IS_MOBILE && navigator.canShare && navigator.share) {
+      try {
+        const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: filename });
+          return;
+        }
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;   // user closed the share sheet
+        // gesture expired / type not shareable -> fall through to the save bar
+      }
+    }
+    const url = URL.createObjectURL(blob);
+    if (NITO_IS_MOBILE || NITO_IN_APP) { nitoShowSaveBar(url, filename, true); return; }
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+  // ===== end mobile-safe downloads =====
+
   async function downloadFormat(base, fmt, jobId, btn){
+    // No payment here - the job's original /generate payment already
+    // covers every export format pulled from it. See
+    // /export/{fmt}/{job_id}'s docstring in web_app.py.
     const session = getWalletSession(base);
     if(!session){ alert('Your wallet session expired - reconnect to download.'); return; }
     const originalText = btn.textContent;
     btn.disabled = true;
     btn.textContent = 'Building...';
     try {
-      const resp = await fetch(`${base}/export/${fmt}/${jobId}`, {
+      // 1) authenticated call builds the file and returns a short-lived
+      //    signed URL (see POST /export/{fmt}/{job_id}/link in web_app.py)
+      const resp = await fetch(`${base}/export/${fmt}/${jobId}/link`, {
+        method: 'POST',
         headers: { 'Authorization': 'Bearer ' + session.session_id },
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.detail || `Export failed (HTTP ${resp.status}).`);
       }
-      const anchorTx = resp.headers.get('X-NitoCAD-Anchor-Tx');
-      const explorerUrl = resp.headers.get('X-NitoCAD-Explorer-Url');
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const cd = resp.headers.get('content-disposition') || '';
-      const match = cd.match(/filename="?([^"]+)"?/);
-      a.download = match ? match[1] : `${jobId}.${fmt}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      const info = await resp.json();
+      const anchorTx = info.anchor_tx;
+      const explorerUrl = info.explorer_url;
+      // 2) plain navigation to an attachment URL - works on phones
+      nitoDeliver(base + info.url, info.filename || `${jobId}.${fmt}`);
       if (anchorTx && explorerUrl) {
         if (confirm('STEP saved. Open on-chain proof on the explorer?')) {
           window.open(explorerUrl, '_blank', 'noopener');
