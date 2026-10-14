@@ -753,12 +753,6 @@
           <span class="demo-url">nitocad.dev/demo</span>
         </div>
         <div class="demo-live">
-          <div class="demo-cfg" id="demoCfg" style="display:none;">
-            <span>API endpoint:</span>
-            <input id="apiBase" type="text" placeholder="https://your-app.up.railway.app" />
-            <button id="apiBaseSave" type="button">Save</button>
-            <span id="apiStatus" class="mono"></span>
-          </div>
 
           <div class="demo-examples">
             <button type="button" data-ex="mounting bracket for a 50mm stepper motor, 4 holes, 5mm fillets, 3mm thick">Motor mount</button>
@@ -901,12 +895,8 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 (function(){
-  const DEFAULT_API_BASE = "https://denitocad-updated-production.up.railway.app";
+  const DEFAULT_API_BASE = "https://nitocad-production-9014.up.railway.app";
 
-  const demoCfg = document.getElementById('demoCfg');
-  const apiBaseInput = document.getElementById('apiBase');
-  const apiBaseSave = document.getElementById('apiBaseSave');
-  const apiStatus = document.getElementById('apiStatus');
   const submitBtn = document.getElementById('demoSubmit');
   const previewBtn = document.getElementById('demoPreview');
   const statusEl = document.getElementById('demoStatus');
@@ -917,12 +907,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
   const descriptionEl = document.getElementById('description');
   const costNoteEl = document.getElementById('demoCostNote');
 
-  if (new URLSearchParams(location.search).has('config')) {
-    demoCfg.style.display = 'flex';
-  }
-
-  function getApiBase(){ return localStorage.getItem('nitocad_api_base') || DEFAULT_API_BASE; }
-  function setApiBase(v){ localStorage.setItem('nitocad_api_base', v.replace(/\/$/, '')); }
+  function getApiBase(){ return DEFAULT_API_BASE; }
 
   let chainConfig = null;
 
@@ -1331,7 +1316,16 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
       });
       const data = await resp.json();
       if(!resp.ok) throw new Error(data.detail || 'Could not start subscription checkout.');
-      window.location.href = data.checkout_url;
+      // Only follow an https checkout link. Add the payment provider's
+      // hostname to ALLOWED_CHECKOUT_HOSTS to also pin the destination.
+      const ALLOWED_CHECKOUT_HOSTS = [];
+      let dest;
+      try { dest = new URL(data.checkout_url); } catch(e) { dest = null; }
+      if(!dest || dest.protocol !== 'https:' ||
+         (ALLOWED_CHECKOUT_HOSTS.length && !ALLOWED_CHECKOUT_HOSTS.includes(dest.hostname))){
+        throw new Error('Checkout link was rejected. Please contact support.');
+      }
+      window.location.href = dest.href;
     } catch(err){
       statusEl.classList.add('err');
       statusEl.textContent = err.message || 'Subscription checkout failed.';
@@ -1543,22 +1537,6 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
       btn.textContent = originalText;
     }
   };
-
-  function refreshStatus(){
-    apiStatus.textContent = getApiBase() ? '· ready' : '· not configured';
-  }
-  apiBaseInput.value = getApiBase();
-  refreshStatus();
-
-  apiBaseSave.addEventListener('click', function(){
-    const v = apiBaseInput.value.trim();
-    if(!v) return;
-    setApiBase(v);
-    chainConfig = null;
-    refreshStatus();
-    updateCostNote();
-    updateWalletUI();
-  });
 
   document.querySelectorAll('.demo-examples button').forEach(btn => {
     btn.addEventListener('click', () => { descriptionEl.value = btn.dataset.ex; });
