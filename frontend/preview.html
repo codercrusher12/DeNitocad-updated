@@ -200,7 +200,31 @@
     font-family:'IBM Plex Mono',monospace;font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;
     color:var(--gold);margin:0 0 10px;
   }
-  .demo-viewer{width:100%;height:340px;background:var(--fog);border-radius:8px;}
+  .demo-viewer{position:relative;width:100%;height:380px;background:#fff;border:1px solid var(--line);border-radius:0;overflow:hidden;touch-action:none;}
+  .viewer-readout{font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:#555;pointer-events:none;}
+  .viewer-bottom{position:absolute;left:8px;right:8px;bottom:8px;display:flex;flex-direction:column;gap:6px;pointer-events:none;}
+  .viewer-row{display:flex;align-items:center;gap:8px;}
+  .viewer-row > *{pointer-events:auto;}
+  .viewer-slider{flex:1 1 80px;min-width:60px;accent-color:#1a1a1a;}
+  .viewer-tag,.viewer-sec{font-family:'IBM Plex Mono',monospace;font-size:.68rem;color:#1a1a1a;}
+  .viewer-sec{min-width:70px;text-align:right;}
+  .viewer-bar{position:absolute;left:8px;right:8px;top:8px;display:flex;flex-wrap:wrap;gap:6px 10px;justify-content:space-between;pointer-events:none;}
+  .viewer-group{display:flex;gap:4px;pointer-events:auto;}
+  .viewer-bar button{font-family:'IBM Plex Mono',monospace;font-size:.68rem;padding:4px 8px;border:1px solid #1a1a1a;border-radius:0;background:#fff;color:#1a1a1a;cursor:pointer;}
+  .viewer-bar button:hover,.viewer-bar button.on{background:#1a1a1a;color:#fff;}
+  .demo-open{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:14px 0 4px;}
+  .demo-open label{cursor:pointer;}
+  .parts{margin-top:12px;border:1px solid var(--line);background:#fff;}
+  .parts-head{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid var(--line);font-family:'IBM Plex Mono',monospace;font-size:.72rem;}
+  .parts-list{max-height:280px;overflow:auto;}
+  .part-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--line);font-family:'IBM Plex Mono',monospace;font-size:.72rem;cursor:pointer;}
+  .part-row.sel{background:var(--fog);}
+  .part-row.off{opacity:.45;}
+  .part-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .swatch{width:12px;height:12px;border:1px solid #1a1a1a;flex:none;}
+  .part-more{padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:#555;}
+  .parts button{font-family:'IBM Plex Mono',monospace;font-size:.68rem;padding:3px 7px;border:1px solid #1a1a1a;border-radius:0;background:#fff;color:#1a1a1a;cursor:pointer;}
+  .parts button:hover{background:#1a1a1a;color:#fff;}
   .demo-params{
     font-family:'IBM Plex Mono',monospace;font-size:.78rem;line-height:1.9;
     background:var(--fog);border-radius:12px;padding:16px 18px;
@@ -294,6 +318,12 @@
     <span id="previewStatus" class="demo-status"></span>
   </div>
 
+  <div class="demo-open">
+    <label for="cadFile" class="btn btn-ghost">Open a CAD file</label>
+    <input id="cadFile" type="file" accept=".step,.stp,.iges,.igs,.brep,.stl,.obj,.glb,.gltf,.3mf" hidden>
+    <span id="openStatus" class="demo-status">STEP, IGES, BREP, STL, OBJ, GLB or 3MF, up to 25 MB. Opens here and is not saved.</span>
+  </div>
+
   <div id="demoResults" class="demo-results">
     <div class="demo-result-grid">
       <div class="demo-result-card">
@@ -304,6 +334,7 @@
         <h4>Parameters used</h4>
         <div id="demoParams" class="demo-params"></div>
         <div id="demoWarnings"></div>
+        <div id="partsList" class="parts" style="display:none;"></div>
       </div>
     </div>
     <div class="preview-cta">
@@ -359,7 +390,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
   // logic) so a session/API-base choice made on either page is
   // honored on both - see that file for the fuller explanatory
   // comments on each of these.
-  const DEFAULT_API_BASE = "https://nitocad-production-9014.up.railway.app";
+  const DEFAULT_API_BASE = "https://denitocad-updated-production.up.railway.app";
   function getApiBase(){ return localStorage.getItem('nitocad_api_base') || DEFAULT_API_BASE; }
 
   let chainConfig = null;
@@ -634,59 +665,666 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     btn.addEventListener('click', () => { descriptionEl.value = btn.dataset.ex; });
   });
 
-  function initViewer(){
-    const el = document.getElementById('viewer');
-    const width = el.clientWidth, height = el.clientHeight;
-    scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xEDF2F4);
-    camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
-    camera.position.set(50, 50, 50);
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(width, height);
-    el.innerHTML = '';
-    el.appendChild(renderer.domElement);
+  // One viewer, three looks, two cameras, any number of parts.
+  //  classic: orange Phong (or the file's own colors) on a grid, perspective camera
+  //  sheet:   drawing-sheet look, pale fill, ink edges, orthographic camera
+  //  wire:    see-through hidden-line view, orthographic camera
+  const PART_FILL = 0xA6C0F6;
+  const EDGE_INK = 0x1a1a1a;
+  const EDGE_ACCENT = 0x1F4FD8;
+  const EDGE_ANGLE = 28;
+  const EDGE_TRI_BUDGET = 600000;
+  const PARTS_LIST_MAX = 300;
+  const VIEW_SIZE = 110;
+  const STYLE_KEY = 'nitocad_preview_style';
+  const STYLES = {
+    classic: { label: 'Classic', bg: 0xEDF2F4, cam: 'persp' },
+    sheet:   { label: 'Sheet',   bg: 0xFFFFFF, cam: 'ortho' },
+    wire:    { label: 'Wire',    bg: 0xFFFFFF, cam: 'ortho' }
+  };
+  const VIEW_DIRS = {
+    iso:   [1, -1, 0.8],
+    front: [0, -1, 0],
+    top:   [0, 0, 1],
+    side:  [1, 0, 0]
+  };
+  // What one model unit means, in millimeters. Only used for the readout
+  // and the cut label, since the viewer rescales every model to fit.
+  const UNIT_MM = { mm: 1, 'in': 25.4, m: 1000 };
+  const UNIT_ORDER = ['mm', 'in', 'm'];
+
+  let persCam, orthoCam, camMode = 'ortho', styleName = 'sheet';
+  let toonGradient, groundPlane, gridHelper, readoutEl, viewerEl;
+  let ambLight, dirLight, hemiLight, sunLight, camBtn, unitBtn, upBtn, partsEl;
+  const styleBtns = {};
+  const sceneSize = 80;
+  let sectionPlane, secAxis = 2, secT = 1, partDims = [1, 1, 1], partScale = 1;
+  let secSlider, secLabel, anim = null, lastT = performance.now();
+  const axisBtns = {};
+  let parts = [], fitGroup = null, contentRoot = null, selectedPart = null;
+  let unitName = 'mm', upAxis = 'z', edgesSkipped = false;
+  const raycaster = new THREE.Raycaster();
+
+  function makeToonGradient(){
+    const data = new Uint8Array([226, 241, 255]);
+    const tex = new THREE.DataTexture(data, 3, 1, THREE.RedFormat, THREE.UnsignedByteType);
+    tex.minFilter = tex.magFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  function makeControls(){
+    if(controls) controls.dispose();
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    const dl = new THREE.DirectionalLight(0xffffff, 0.8);
-    dl.position.set(50, 50, 50);
-    scene.add(dl);
-    scene.add(new THREE.GridHelper(100, 10));
+    controls.enablePan = true;
+    controls.addEventListener('start', finishAnim);
+  }
+
+  function setView(name){
+    const d = VIEW_DIRS[name] || VIEW_DIRS.iso;
+    const dist = camMode === 'ortho' ? 300 : 150;
+    const v = new THREE.Vector3(d[0], d[1], d[2]).normalize().multiplyScalar(dist);
+    camera.up.set(0, name === 'top' ? 1 : 0, name === 'top' ? 0 : 1);
+    camera.position.copy(v);
+    camera.zoom = 1;
+    camera.updateProjectionMatrix();
+    controls.target.set(0, 0, 0);
+    controls.update();
+  }
+
+  function setCamMode(mode){
+    if(!camera) return;
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    const up = camera.up.clone();
+    camMode = mode;
+    camera = mode === 'ortho' ? orthoCam : persCam;
+    camera.up.copy(up);
+    camera.position.copy(dir.multiplyScalar(mode === 'ortho' ? 300 : 150));
+    camera.zoom = 1;
+    camera.updateProjectionMatrix();
+    makeControls();
+    controls.target.set(0, 0, 0);
+    controls.update();
+    fitCamera();
+    refreshButtons();
+  }
+
+  function fitCamera(){
+    if(!viewerEl || !renderer) return;
+    const w = viewerEl.clientWidth, h = viewerEl.clientHeight;
+    if(!w || !h) return;
+    const aspect = w / h;
+    persCam.aspect = aspect;
+    persCam.updateProjectionMatrix();
+    orthoCam.left = -VIEW_SIZE * aspect / 2;
+    orthoCam.right = VIEW_SIZE * aspect / 2;
+    orthoCam.top = VIEW_SIZE / 2;
+    orthoCam.bottom = -VIEW_SIZE / 2;
+    orthoCam.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }
+
+  function clipProps(){
+    return { side: THREE.DoubleSide, clippingPlanes: [sectionPlane], clipShadows: true };
+  }
+
+  function buildMaterial(name, part){
+    if(name === 'classic'){
+      const col = part && part.color !== null ? part.color : 0xD3541F;
+      return Object.assign(new THREE.MeshPhongMaterial({ color: col, specular: 0x111111, shininess: 150 }), clipProps());
+    }
+    if(name === 'sheet'){
+      // Toon in shadow drops the whole directional term, so the part never
+      // receives shadow and ambient stays high.
+      return Object.assign(new THREE.MeshToonMaterial({
+        color: PART_FILL, gradientMap: toonGradient,
+        polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
+      }), clipProps());
+    }
+    const m = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    m.visible = false;
+    return m;
+  }
+
+  function paintPart(part){
+    const mesh = part.mesh;
+    if(mesh.material) mesh.material.dispose();
+    mesh.material = buildMaterial(styleName, part);
+    mesh.castShadow = styleName === 'sheet';
+    if(mesh.material.emissive){
+      mesh.material.emissive.setHex(part.selected ? EDGE_ACCENT : 0x000000);
+      mesh.material.emissiveIntensity = 0.3;
+    }
+    if(part.edges){
+      part.edges.visible = styleName !== 'classic' || part.selected;
+      part.edges.material.color.setHex(part.selected ? EDGE_ACCENT : EDGE_INK);
+      part.edges.material.opacity = styleName === 'wire' ? 0.9 : 0.72;
+      part.edges.material.depthTest = styleName !== 'wire';
+      part.edges.material.needsUpdate = true;
+    }
+  }
+
+  function applyStyle(name, withCamDefault){
+    if(!STYLES[name]) name = 'sheet';
+    styleName = name;
+    const def = STYLES[name];
+    scene.background = new THREE.Color(def.bg);
+    ambLight.visible = dirLight.visible = name === 'classic';
+    hemiLight.visible = sunLight.visible = name !== 'classic';
+    sunLight.castShadow = name === 'sheet';
+    gridHelper.visible = name === 'classic';
+    groundPlane.visible = name === 'sheet';
+    parts.forEach(paintPart);
+    try { localStorage.setItem(STYLE_KEY, name); } catch(e){}
+    if(withCamDefault && camMode !== def.cam){ setCamMode(def.cam); } else { refreshButtons(); }
+  }
+
+  function refreshButtons(){
+    Object.keys(styleBtns).forEach(function(k){
+      styleBtns[k].classList.toggle('on', k === styleName);
+    });
+    if(camBtn) camBtn.textContent = camMode === 'ortho' ? 'Ortho' : 'Persp';
+    if(unitBtn) unitBtn.textContent = 'Units ' + unitName;
+    if(upBtn) upBtn.textContent = 'Up ' + upAxis.toUpperCase();
+  }
+
+  function makeBtn(label, onClick){
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function unitFactor(){ return UNIT_MM[unitName] || 1; }
+
+  function updateReadout(){
+    if(!readoutEl) return;
+    const f = unitFactor();
+    let text = (partDims[0] * f).toFixed(1) + ' x ' + (partDims[1] * f).toFixed(1) + ' x ' + (partDims[2] * f).toFixed(1) + ' mm';
+    if(parts.length > 1) text += '  |  ' + parts.length + ' parts';
+    if(edgesSkipped) text += '  |  edges off, large model';
+    readoutEl.textContent = text;
+  }
+
+  // ---- model lifecycle --------------------------------------------------
+
+  function clearModel(){
+    finishAnim();
+    selectedPart = null;
+    if(fitGroup){
+      scene.remove(fitGroup);
+      const seen = new Set();
+      fitGroup.traverse(function(o){
+        if(o.geometry && !seen.has(o.geometry.uuid)){ seen.add(o.geometry.uuid); o.geometry.dispose(); }
+        if(o.material){ (Array.isArray(o.material) ? o.material : [o.material]).forEach(function(m){ m.dispose(); }); }
+      });
+    }
+    fitGroup = null;
+    contentRoot = null;
+    parts = [];
+    edgesSkipped = false;
+  }
+
+  function registerParts(root){
+    const meshes = [];
+    root.traverse(function(o){ if(o.isMesh && o.geometry) meshes.push(o); });
+    let tris = 0;
+    meshes.forEach(function(o){
+      const g = o.geometry;
+      tris += (g.index ? g.index.count : g.attributes.position.count) / 3;
+    });
+    edgesSkipped = tris > EDGE_TRI_BUDGET;
+    const edgeGeoms = new Map();
+    meshes.forEach(function(o, i){
+      const g = o.geometry;
+      if(!g.attributes.normal) g.computeVertexNormals();
+      let color = null;
+      const mat = Array.isArray(o.material) ? o.material[0] : o.material;
+      if(mat && mat.color){
+        const hex = mat.color.getHex();
+        // Loaders give uncolored parts a white default, so pure white means no color.
+        if(hex !== 0xffffff) color = hex;
+      }
+      let edges = null;
+      if(!edgesSkipped){
+        let eg = edgeGeoms.get(g.uuid);
+        if(!eg){ eg = new THREE.EdgesGeometry(g, EDGE_ANGLE); edgeGeoms.set(g.uuid, eg); }
+        edges = new THREE.LineSegments(
+          eg,
+          new THREE.LineBasicMaterial({ color: EDGE_INK, transparent: true, opacity: 0.72, clippingPlanes: [sectionPlane] })
+        );
+        o.add(edges);
+      }
+      const name = o.name || (o.parent && o.parent.name) || ('Part ' + (i + 1));
+      parts.push({ name: name, mesh: o, edges: edges, color: color, visible: true, selected: false });
+    });
+  }
+
+  // Centers the model, scales it to the scene, and puts its up axis on Z.
+  function refit(){
+    contentRoot.rotation.set(upAxis === 'y' ? Math.PI / 2 : 0, 0, 0);
+    fitGroup.scale.setScalar(1);
+    fitGroup.position.set(0, 0, 0);
+    fitGroup.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(contentRoot);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    partDims = [size.x, size.y, size.z];
+    partScale = sceneSize / maxDim;
+    fitGroup.scale.setScalar(partScale);
+    fitGroup.position.copy(center.multiplyScalar(-partScale));
+    const floor = -(size.z * partScale) / 2 - 0.05;
+    groundPlane.position.z = floor;
+    gridHelper.position.z = floor;
+    updateReadout();
+    updateSection();
+  }
+
+  function setModel(object, opts){
+    clearModel();
+    opts = opts || {};
+    unitName = opts.unit || 'mm';
+    upAxis = opts.upY ? 'y' : 'z';
+    secT = 1;
+    contentRoot = new THREE.Group();
+    contentRoot.add(object);
+    fitGroup = new THREE.Group();
+    fitGroup.add(contentRoot);
+    scene.add(fitGroup);
+    registerParts(object);
+    applyStyle(styleName, false);
+    refit();
+    renderParts();
+    refreshButtons();
+    setView('iso');
+  }
+
+  // ---- parts list and picking ---------------------------------------------
+
+  function setVisible(part, v){
+    part.visible = v;
+    part.mesh.visible = v;
+  }
+
+  function selectPart(part){
+    if(part === selectedPart) part = null;
+    const prev = selectedPart;
+    selectedPart = part;
+    if(prev){ prev.selected = false; paintPart(prev); }
+    if(part){ part.selected = true; paintPart(part); }
+    renderParts();
+    if(part && partsEl){
+      const row = partsEl.querySelector('[data-i="' + parts.indexOf(part) + '"]');
+      if(row && row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function renderParts(){
+    if(!partsEl) return;
+    partsEl.textContent = '';
+    if(parts.length < 2){ partsEl.style.display = 'none'; return; }
+    partsEl.style.display = 'block';
+
+    const head = document.createElement('div');
+    head.className = 'parts-head';
+    const title = document.createElement('span');
+    title.textContent = 'Parts (' + parts.length + ')';
+    head.appendChild(title);
+    head.appendChild(makeBtn('Show all', function(){
+      parts.forEach(function(p){ setVisible(p, true); });
+      renderParts();
+    }));
+    partsEl.appendChild(head);
+
+    const list = document.createElement('div');
+    list.className = 'parts-list';
+    parts.slice(0, PARTS_LIST_MAX).forEach(function(part, i){
+      const row = document.createElement('div');
+      row.className = 'part-row' + (part.selected ? ' sel' : '') + (part.visible ? '' : ' off');
+      row.setAttribute('data-i', String(i));
+      row.addEventListener('click', function(){ selectPart(part); });
+
+      const swatch = document.createElement('span');
+      swatch.className = 'swatch';
+      swatch.style.background = part.color !== null ? '#' + part.color.toString(16).padStart(6, '0') : '#A6C0F6';
+      row.appendChild(swatch);
+
+      const name = document.createElement('span');
+      name.className = 'part-name';
+      name.textContent = part.name;
+      row.appendChild(name);
+
+      const vis = makeBtn(part.visible ? 'Hide' : 'Show', function(e){
+        e.stopPropagation();
+        setVisible(part, !part.visible);
+        renderParts();
+      });
+      row.appendChild(vis);
+      const only = makeBtn('Only', function(e){
+        e.stopPropagation();
+        parts.forEach(function(p){ setVisible(p, p === part); });
+        renderParts();
+      });
+      row.appendChild(only);
+      list.appendChild(row);
+    });
+    if(parts.length > PARTS_LIST_MAX){
+      const more = document.createElement('div');
+      more.className = 'part-more';
+      more.textContent = '+ ' + (parts.length - PARTS_LIST_MAX) + ' more parts not listed';
+      list.appendChild(more);
+    }
+    partsEl.appendChild(list);
+  }
+
+  function pickAt(ev){
+    if(parts.length < 2) return;
+    const r = renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+    raycaster.setFromCamera(ndc, camera);
+    const hits = raycaster.intersectObjects(parts.filter(function(p){ return p.visible; }).map(function(p){ return p.mesh; }), false);
+    const hit = hits.length ? hits[0].object : null;
+    selectPart(hit ? parts.find(function(p){ return p.mesh === hit; }) : null);
+  }
+
+  // ---- viewer setup ---------------------------------------------------------
+
+  function initViewer(){
+    viewerEl = document.getElementById('viewer');
+    partsEl = document.getElementById('partsList');
+    viewerEl.innerHTML = '';
+    const width = viewerEl.clientWidth, height = viewerEl.clientHeight;
+    scene = new THREE.Scene();
+
+    persCam = new THREE.PerspectiveCamera(50, width / height, 0.1, 2000);
+    orthoCam = new THREE.OrthographicCamera(-VIEW_SIZE / 2, VIEW_SIZE / 2, VIEW_SIZE / 2, -VIEW_SIZE / 2, 0.1, 2000);
+    persCam.up.set(0, 0, 1);
+    orthoCam.up.set(0, 0, 1);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(width, height);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.localClippingEnabled = true;
+    sectionPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 1000);
+    viewerEl.appendChild(renderer.domElement);
+
+    ambLight = new THREE.AmbientLight(0xffffff, 0.6);
+    dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(50, -50, 80);
+    hemiLight = new THREE.HemisphereLight(0xffffff, 0xffffff, 0.9);
+    sunLight = new THREE.DirectionalLight(0xffffff, 0.16);
+    sunLight.position.set(60, -40, 120);
+    sunLight.shadow.mapSize.set(1024, 1024);
+    const sc = sunLight.shadow.camera;
+    sc.left = -70; sc.right = 70; sc.top = 70; sc.bottom = -70; sc.near = 1; sc.far = 400;
+    scene.add(ambLight, dirLight, hemiLight, sunLight);
+
+    gridHelper = new THREE.GridHelper(100, 10);
+    gridHelper.rotation.x = Math.PI / 2;
+    scene.add(gridHelper);
+
+    groundPlane = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.ShadowMaterial({ opacity: 0.1 }));
+    groundPlane.receiveShadow = true;
+    scene.add(groundPlane);
+
+    toonGradient = makeToonGradient();
+
+    let saved = null;
+    try { saved = localStorage.getItem(STYLE_KEY); } catch(e){}
+    styleName = STYLES[saved] ? saved : 'sheet';
+    camMode = STYLES[styleName].cam;
+    camera = camMode === 'ortho' ? orthoCam : persCam;
+    makeControls();
+
+    // A tap (not a drag) selects the part under the finger.
+    let downX = 0, downY = 0;
+    renderer.domElement.addEventListener('pointerdown', function(e){ downX = e.clientX; downY = e.clientY; });
+    renderer.domElement.addEventListener('pointerup', function(e){
+      if(Math.hypot(e.clientX - downX, e.clientY - downY) <= 5) pickAt(e);
+    });
+
+    readoutEl = document.createElement('div');
+    readoutEl.className = 'viewer-readout';
+
+    const bar = document.createElement('div');
+    bar.className = 'viewer-bar';
+    const g1 = document.createElement('div');
+    g1.className = 'viewer-group';
+    Object.keys(STYLES).forEach(function(k){
+      styleBtns[k] = makeBtn(STYLES[k].label, function(){ applyStyle(k, true); });
+      g1.appendChild(styleBtns[k]);
+    });
+    const g2 = document.createElement('div');
+    g2.className = 'viewer-group';
+    [['iso', 'Iso'], ['front', 'Front'], ['top', 'Top'], ['side', 'Side']].forEach(function(pair){
+      g2.appendChild(makeBtn(pair[1], function(){ setView(pair[0]); }));
+    });
+    camBtn = makeBtn('', function(){ setCamMode(camMode === 'ortho' ? 'persp' : 'ortho'); });
+    g2.appendChild(camBtn);
+    bar.appendChild(g1);
+    bar.appendChild(g2);
+    viewerEl.appendChild(bar);
+
+    const bottom = document.createElement('div');
+    bottom.className = 'viewer-bottom';
+    const row1 = document.createElement('div');
+    row1.className = 'viewer-row';
+    row1.appendChild(makeBtn('Rise', startRise));
+    row1.appendChild(makeBtn('Draw', startDraw));
+    unitBtn = makeBtn('', function(){
+      unitName = UNIT_ORDER[(UNIT_ORDER.indexOf(unitName) + 1) % UNIT_ORDER.length];
+      refreshButtons();
+      updateReadout();
+      updateSection();
+    });
+    upBtn = makeBtn('', function(){
+      upAxis = upAxis === 'z' ? 'y' : 'z';
+      if(contentRoot) refit();
+      refreshButtons();
+      setView('iso');
+    });
+    row1.appendChild(unitBtn);
+    row1.appendChild(upBtn);
+    const row2 = document.createElement('div');
+    row2.className = 'viewer-row';
+    const tag = document.createElement('span');
+    tag.className = 'viewer-tag';
+    tag.textContent = 'Cut';
+    row2.appendChild(tag);
+    ['X', 'Y', 'Z'].forEach(function(n, i){
+      axisBtns[i] = makeBtn(n, function(){ finishAnim(); secAxis = i; updateSection(); });
+      row2.appendChild(axisBtns[i]);
+    });
+    secSlider = document.createElement('input');
+    secSlider.type = 'range';
+    secSlider.min = '0';
+    secSlider.max = '100';
+    secSlider.value = '100';
+    secSlider.className = 'viewer-slider';
+    secSlider.addEventListener('input', function(){
+      finishAnim();
+      secT = Number(secSlider.value) / 100;
+      updateSection();
+    });
+    row2.appendChild(secSlider);
+    secLabel = document.createElement('span');
+    secLabel.className = 'viewer-sec';
+    row2.appendChild(secLabel);
+    bottom.appendChild(row1);
+    bottom.appendChild(row2);
+    bottom.appendChild(readoutEl);
+    viewerEl.appendChild(bottom);
+
+    applyStyle(styleName, false);
+    setView('iso');
+    if(window.ResizeObserver){
+      new ResizeObserver(fitCamera).observe(viewerEl);
+    } else {
+      window.addEventListener('resize', fitCamera);
+    }
     animate();
   }
+
+  function ease(p){
+    return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+  }
+
+  // Section cut. The plane keeps everything at or below the cut along the
+  // chosen axis. Z with the Top view gives an architect-style plan cut.
+  function updateSection(){
+    if(!sectionPlane) return;
+    const size = partDims[secAxis] * partScale;
+    const half = size / 2;
+    sectionPlane.normal.set(0, 0, 0);
+    sectionPlane.normal.setComponent(secAxis, -1);
+    sectionPlane.constant = secT >= 0.995 ? half + 1 : -half + secT * size;
+    if(secLabel){
+      secLabel.textContent = secT >= 0.995 ? 'off' : ['X', 'Y', 'Z'][secAxis] + ' ' + (secT * partDims[secAxis] * unitFactor()).toFixed(1) + ' mm';
+    }
+    Object.keys(axisBtns).forEach(function(k){
+      axisBtns[k].classList.toggle('on', Number(k) === secAxis);
+    });
+    if(secSlider) secSlider.value = String(Math.round(secT * 100));
+  }
+
+  function finishAnim(){
+    if(!anim) return;
+    const a = anim;
+    anim = null;
+    if(a.finish) a.finish();
+  }
+
+  // Rise: the cut climbs the Z axis while the camera eases from a plan
+  // view down to the iso view, so the flat drawing becomes the part.
+  function startRise(){
+    if(!parts.length) return;
+    finishAnim();
+    secAxis = 2;
+    const dist = camMode === 'ortho' ? 300 : 150;
+    const dirStart = new THREE.Vector3(0.03, -0.25, 1).normalize();
+    const dirEnd = new THREE.Vector3(VIEW_DIRS.iso[0], VIEW_DIRS.iso[1], VIEW_DIRS.iso[2]).normalize();
+    camera.up.set(0, 0, 1);
+    camera.zoom = 1;
+    camera.updateProjectionMatrix();
+    controls.target.set(0, 0, 0);
+    anim = {
+      t0: performance.now(),
+      dur: 4500,
+      tick: function(p){
+        const e = ease(p);
+        secT = e;
+        updateSection();
+        camera.position.copy(dirStart.clone().lerp(dirEnd, e).normalize().multiplyScalar(dist));
+      },
+      finish: function(){ secT = 1; updateSection(); }
+    };
+  }
+
+  // Draw: edges trace in first, then the fill fades up while the camera
+  // turns slowly, like a Create animation followed by an ambient orbit.
+  function startDraw(){
+    if(!parts.length) return;
+    finishAnim();
+    secT = 1;
+    updateSection();
+    const zAxis = new THREE.Vector3(0, 0, 1);
+    parts.forEach(function(p){
+      if(p.edges) p.edges.visible = true;
+      p.mesh.material.transparent = true;
+      p.mesh.material.opacity = 0;
+      p.mesh.material.depthWrite = false;
+    });
+    anim = {
+      t0: performance.now(),
+      dur: 4200,
+      tick: function(p, dt){
+        const draw = Math.min(1, p / 0.62);
+        const fill = Math.max(0, (p - 0.62) / 0.38);
+        parts.forEach(function(part){
+          if(part.edges){
+            const total = part.edges.geometry.attributes.position.count;
+            part.edges.geometry.setDrawRange(0, Math.floor(total * ease(draw) / 2) * 2);
+            if(styleName === 'classic') part.edges.material.opacity = (1 - fill) * 0.72;
+          }
+          part.mesh.material.opacity = fill;
+        });
+        camera.position.applyAxisAngle(zAxis, dt * 0.5);
+      },
+      finish: function(){
+        parts.forEach(function(part){
+          if(part.edges) part.edges.geometry.setDrawRange(0, Infinity);
+        });
+        applyStyle(styleName, false);
+      }
+    };
+  }
+
   function animate(){
     requestAnimationFrame(animate);
+    const now = performance.now();
+    const dt = (now - lastT) / 1000;
+    lastT = now;
+    if(anim){
+      const p = Math.min(1, (now - anim.t0) / anim.dur);
+      anim.tick(p, dt);
+      if(p >= 1) finishAnim();
+    }
     controls.update();
     renderer.render(scene, camera);
   }
+
+  // ---- loading -----------------------------------------------------------------
+
+  function stlGeometryToObject(geometry){
+    return new THREE.Mesh(geometry, new THREE.MeshBasicMaterial());
+  }
+
   function loadSTL(url){
     new STLLoader().load(
       url,
-      function onLoad(geometry){
-        if(currentMesh) scene.remove(currentMesh);
-        const material = new THREE.MeshPhongMaterial({ color: 0xD3541F, specular: 0x111111, shininess: 150 });
-        currentMesh = new THREE.Mesh(geometry, material);
-        geometry.computeBoundingBox();
-        geometry.center();
-        const bbox = geometry.boundingBox;
-        const maxDim = Math.max(bbox.max.x - bbox.min.x, bbox.max.y - bbox.min.y, bbox.max.z - bbox.min.z);
-        const scale = 80 / maxDim;
-        currentMesh.scale.set(scale, scale, scale);
-        scene.add(currentMesh);
-        camera.position.set(50, 50, 50);
-        controls.target.set(0, 0, 0);
-        controls.update();
-      },
+      function onLoad(geometry){ setModel(stlGeometryToObject(geometry), { unit: 'mm' }); },
       undefined,
       function onError(err){
         console.error('STL load failed for', url, err);
         statusEl.classList.add('err');
-        statusEl.textContent = 'Generated, but the 3D preview failed to load.';
+        statusEl.textContent = 'The 3D preview failed to load.';
       }
     );
   }
 
+  // Load model bytes the user opened. kind: stl | obj | glb | gltf | 3mf.
+  async function loadModelData(data, kind){
+    if(kind === 'stl'){
+      setModel(stlGeometryToObject(new STLLoader().parse(data)), { unit: 'mm' });
+    } else if(kind === 'glb' || kind === 'gltf'){
+      const mod = await import('three/addons/loaders/GLTFLoader.js');
+      const gltf = await new Promise(function(resolve, reject){
+        new mod.GLTFLoader().parse(data, '', resolve, reject);
+      });
+      const extras = gltf.asset && gltf.asset.extras;
+      const fromNito = !!(extras && extras.nito_zup);
+      // NitoCAD's own GLB is Z-up millimeters. Ordinary glTF is Y-up meters.
+      setModel(gltf.scene, { upY: !fromNito, unit: fromNito ? 'mm' : 'm' });
+    } else if(kind === 'obj'){
+      const mod = await import('three/addons/loaders/OBJLoader.js');
+      setModel(new mod.OBJLoader().parse(data), { upY: true, unit: 'mm' });
+    } else if(kind === '3mf'){
+      const mod = await import('three/addons/loaders/3MFLoader.js');
+      setModel(new mod.ThreeMFLoader().parse(data), { unit: 'mm' });
+    } else {
+      throw new Error('Unsupported format');
+    }
+  }
+
   function renderResult(base, data){
+    const cta = document.querySelector('.preview-cta');
+    if(cta) cta.style.display = '';
     const p = data.parameters || {};
     let rows = `<div class="row"><span>part_type</span><b>${p.part_type}</b></div>`;
     for(const [k, v] of Object.entries(p.parameters || {})){
@@ -717,6 +1355,89 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
       : null;
     loadSTL(jobStlUrl || localStlUrl);
   }
+
+  const cadFileEl = document.getElementById('cadFile');
+  const openStatusEl = document.getElementById('openStatus');
+  const ctaEl = document.querySelector('.preview-cta');
+  const LOCAL_EXT = ['stl', 'obj', 'glb', 'gltf', '3mf'];
+  const SERVER_EXT = ['step', 'stp', 'iges', 'igs', 'brep'];
+  const OPEN_MAX_MB = 25;
+
+  function esc(t){
+    return String(t).replace(/[&<>"']/g, function(c){
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function showFileInfo(file, ext){
+    const mb = (file.size / (1024 * 1024)).toFixed(file.size < 1024 * 1024 ? 2 : 1);
+    paramsEl.innerHTML =
+      '<div class="row"><span>file</span><b>' + esc(file.name) + '</b></div>' +
+      '<div class="row"><span>format</span><span>' + esc(ext.toUpperCase()) + '</span></div>' +
+      '<div class="row"><span>size</span><span>' + mb + ' MB</span></div>';
+    warningsEl.innerHTML = '';
+    if(ctaEl) ctaEl.style.display = 'none';
+  }
+
+  function openFail(msg){
+    openStatusEl.classList.add('err');
+    openStatusEl.textContent = msg;
+  }
+
+  async function showOpened(file, ext, kind, data){
+    resultsEl.classList.add('active');
+    if(!scene) initViewer();
+    showFileInfo(file, ext);
+    await loadModelData(data, kind);
+  }
+
+  cadFileEl.addEventListener('change', async function(){
+    const file = cadFileEl.files && cadFileEl.files[0];
+    if(!file) return;
+    const ext = file.name.indexOf('.') >= 0 ? file.name.split('.').pop().toLowerCase() : '';
+    openStatusEl.classList.remove('err');
+
+    try{
+      const isLocal = LOCAL_EXT.indexOf(ext) >= 0;
+      const isServer = SERVER_EXT.indexOf(ext) >= 0;
+      if(!isLocal && !isServer){ openFail('Use a STEP, IGES, BREP, STL, OBJ, GLB or 3MF file.'); return; }
+      if(file.size > OPEN_MAX_MB * 1024 * 1024){ openFail('That file is larger than ' + OPEN_MAX_MB + ' MB.'); return; }
+
+      if(isLocal){
+        // Already a mesh: read it in the browser, no upload.
+        openStatusEl.textContent = 'Opening ' + file.name + '…';
+        const data = (ext === 'obj' || ext === 'gltf') ? await file.text() : await file.arrayBuffer();
+        await showOpened(file, ext, ext, data);
+        openStatusEl.textContent = 'Opened in your browser. Nothing was uploaded.';
+        return;
+      }
+
+      openStatusEl.textContent = 'Converting ' + file.name + '…';
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch(getApiBase() + '/convert', { method: 'POST', body: fd });
+      if(!res.ok){
+        let msg = '';
+        try{
+          const j = await res.json();
+          const d = j.detail || j.error;
+          msg = typeof d === 'string' ? d : '';
+        }catch(e){}
+        throw new Error(msg || ('Could not open this file (HTTP ' + res.status + ').'));
+      }
+      // Assemblies come back as GLB (one node per part), everything else as STL.
+      const isGlb = (res.headers.get('content-type') || '').indexOf('gltf') >= 0;
+      const buf = await res.arrayBuffer();
+      await showOpened(file, ext, isGlb ? 'glb' : 'stl', buf);
+      openStatusEl.textContent = isGlb
+        ? 'Opened as an assembly. Converted on the server and not saved.'
+        : 'Opened. Converted on the server and not saved.';
+    }catch(err){
+      openFail(err.message || 'Something went wrong.');
+    }finally{
+      cadFileEl.value = '';
+    }
+  });
 
   previewBtn.addEventListener('click', async function(){
     const base = getApiBase();
