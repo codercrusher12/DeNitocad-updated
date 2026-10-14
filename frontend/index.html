@@ -901,7 +901,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 (function(){
-  const DEFAULT_API_BASE = "https://nitocad-production-9014.up.railway.app";
+  const DEFAULT_API_BASE = "https://denitocad-updated-production.up.railway.app";
 
   const demoCfg = document.getElementById('demoCfg');
   const apiBaseInput = document.getElementById('apiBase');
@@ -975,10 +975,29 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
   }
   updateCostNote();
 
+  // Payment destination and chain params are pinned in the frontend so a
+  // backend change can never redirect funds. Keep in sync with Railway env
+  // (TREASURY_ADDRESS, BOTCHAIN_ENVIRONMENT) and config.py.
+  const PINNED_CHAIN = {
+    treasury_address: '0x4ef8a7cd822a1b4eb13c5ca565bf21491a08fc37',
+    chain_id_hex: '0x2a5',
+    chain_name: 'BOT Chain',
+    rpc_url: 'https://rpc.botchain.ai',
+    explorer_url: 'https://scan.botchain.ai',
+    currency_symbol: 'BOT',
+  };
+
   async function getChainConfig(base){
     if (chainConfig) return chainConfig;
     const res = await fetch(base + '/config/chain');
-    chainConfig = await res.json();
+    const server = await res.json();
+    if (
+      server.treasury_address &&
+      server.treasury_address.toLowerCase() !== PINNED_CHAIN.treasury_address.toLowerCase()
+    ) {
+      throw new Error('Treasury address mismatch. Payment blocked.');
+    }
+    chainConfig = { ...server, ...PINNED_CHAIN };
     return chainConfig;
   }
 
