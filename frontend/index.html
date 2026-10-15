@@ -1515,26 +1515,9 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
         throw new Error(err.detail || `Export failed (HTTP ${resp.status}).`);
       }
       const info = await resp.json();
-      const anchorTx = info.anchor_tx;
-      const explorerUrl = info.explorer_url;
-      // 2) plain navigation to an attachment URL - works on phones
+      // 2) plain navigation to an attachment URL - works on phones.
+      //    Downloading never anchors; see anchorJob() for the optional button.
       nitoDeliver(base + info.url, info.filename || `${jobId}.${fmt}`);
-      if (anchorTx && explorerUrl) {
-        showProvenanceBanner(jobId, anchorTx, explorerUrl);
-      } else if (fmt === 'step' && info.anchor_required) {
-        statusEl.classList.remove('err');
-        statusEl.textContent = 'STEP downloading - confirm the anchor in your wallet…';
-        try {
-          const d = await anchorWithWallet(base, session, jobId);
-          statusEl.textContent = 'STEP downloaded and anchored on-chain.';
-          showProvenanceBanner(jobId, d.anchor_tx, d.explorer_url);
-        } catch (e) {
-          statusEl.textContent = 'STEP downloaded. Anchor not signed: ' + e.message;
-        }
-      } else if (fmt === 'step') {
-        statusEl.classList.remove('err');
-        statusEl.textContent = 'STEP downloaded. On-chain anchoring is not enabled on the server yet.';
-      }
     } catch (err) {
       alert('Download failed: ' + err.message);
     } finally {
@@ -1543,6 +1526,27 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     }
   }
   window.downloadFormat = function(base, fmt, jobId, ev){ downloadFormat(base, fmt, jobId, ev.target); };
+
+  // Optional, separate from downloading: the user's own wallet signs the anchor.
+  window.anchorJob = async function(base, jobId, btn){
+    const session = getWalletSession(base);
+    if(!session){ alert('Your wallet session expired - reconnect first.'); return; }
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Confirm in your wallet…';
+    try {
+      const d = await anchorWithWallet(base, session, jobId);
+      statusEl.classList.remove('err');
+      statusEl.textContent = 'Anchored on BOT Chain.';
+      showProvenanceBanner(jobId, d.anchor_tx, d.explorer_url);
+      const box = document.getElementById('anchorBox');
+      if (box) box.remove();
+    } catch (e) {
+      alert('Anchor not completed: ' + e.message);
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  };
 
   // GET /download/{fmt}/{filename} is ownership-gated now, except for
   // anonymous /preview output (see db.find_job_owner and web_app.py's
@@ -1756,7 +1760,23 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
     } else if (data.job_id) {
       meta = `<p class="demo-dl-meta">Job <code>${data.job_id}</code> - your generation payment already covers STEP/IGES/DXF/PDF, built individually only when you click a format, at no extra charge.</p>`;
     }
-    downloadsEl.innerHTML = meta + `<div class="demo-dl-links">${links}</div>`;
+    let anchorBox = '';
+    if (data.job_id && !isPreview) {
+      anchorBox = `
+      <div id="anchorBox" style="margin-top:16px;padding:14px 16px;border-radius:12px;border:1px solid rgba(19,165,125,.4);background:rgba(19,165,125,.07);">
+        <div style="font-family:IBM Plex Mono,monospace;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;opacity:.75;">⛓ Optional - BOT Chain</div>
+        <div style="font-weight:600;margin-top:4px;">Anchor this design on BOT Chain</div>
+        <ul style="margin:8px 0 12px 18px;padding:0;font-size:.85rem;line-height:1.55;">
+          <li><b>Tamper-proof record</b> - a permanent, timestamped entry on BOT Chain that nobody, including us, can edit later.</li>
+          <li><b>Your wallet on record</b> - the wallet you sign with is stored as the submitter, so you can show you registered this design first.</li>
+          <li><b>Verifiable by anyone</b> - the parameters hash, template version and STEP file hash are public, so anyone can re-check the part matches.</li>
+          <li><b>Works without NitoCAD</b> - the full parameters live in the chain's event log, so the proof outlasts any server.</li>
+        </ul>
+        <div style="font-size:.78rem;opacity:.7;margin-bottom:10px;">Optional. Costs a small BOT network fee, paid from your wallet. Anchoring is separate from downloading - skip it if you don't need it.</div>
+        <button class="btn btn-primary" id="anchorBtn" onclick="anchorJob('${base}','${data.job_id}',this)">⛓ Anchor on BOT Chain</button>
+      </div>`;
+    }
+    downloadsEl.innerHTML = meta + `<div class="demo-dl-links">${links}</div>` + anchorBox;
 
     // Always prefer the job-id proxy so the viewer never hits R2
     // cross-origin (R2 has no CORS rule for this frontend) and never

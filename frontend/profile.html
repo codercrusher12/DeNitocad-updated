@@ -253,6 +253,7 @@
       </a>
     </div>
     <ul class="navlinks">
+      <li><a href="index.html">Home</a></li>
       <li><a href="index.html#how">How it works</a></li>
       <li><a href="index.html#pricing">Pricing</a></li>
       <li><a href="index.html#demo">Demo</a></li>
@@ -266,6 +267,7 @@
     </button>
   </nav>
   <div class="mobile-menu" id="mobileMenu">
+    <a href="index.html">Home</a>
     <a href="index.html#how">How it works</a>
     <a href="index.html#pricing">Pricing</a>
     <a href="index.html#demo">Demo</a>
@@ -277,6 +279,7 @@
 </header>
 
 <main class="wrap profile-hero">
+  <a href="index.html" style="display:inline-block;margin-bottom:14px;font-size:.9rem;font-weight:600;text-decoration:none;color:inherit;opacity:.8;">← Back to Home</a>
   <span class="eyebrow">Your Account</span>
   <h1>My Projects</h1>
   <p>Every part you've generated, in one place. Re-download any export format anytime — it's already included in what you paid to generate it, no extra charge.</p>
@@ -652,24 +655,7 @@
       const info = await resp.json();
       // 2) plain navigation to an attachment URL - works on phones
       nitoDeliver(base + info.url, info.filename || `${jobId}.${fmt}`);
-      // 3) THEN the on-chain anchor (STEP only): the server submits it after
-      //    this response, and the tx link appears under the project.
-      if (fmt === 'step') {
-        if (info.anchor_tx) {
-          setAnchorState(jobId, 'done', info.anchor_tx, info.explorer_url);
-        } else if (info.anchor_required) {
-          setAnchorState(jobId, 'pending');
-          try {
-            const d = await anchorWithWallet(base, session, jobId);
-            setAnchorState(jobId, 'done', d.anchor_tx, d.explorer_url);
-          } catch (e) {
-            setAnchorState(jobId, 'idle');
-            alert('Anchor not signed: ' + e.message);
-          }
-        } else if (info.anchor_enabled === false) {
-          setAnchorState(jobId, 'off');
-        }
-      }
+      // Downloading never anchors - see the separate "Anchor on BOT Chain" button.
     } catch (err) {
       alert('Download failed: ' + err.message);
     } finally {
@@ -678,6 +664,21 @@
     }
   }
   window.downloadFormat = function(base, fmt, jobId, ev){ downloadFormat(base, fmt, jobId, ev.target); };
+
+  // Optional, separate from downloading: the user's own wallet signs the anchor.
+  window.anchorJob = async function(jobId, btn){
+    const base = getApiBase();
+    const session = getWalletSession(base);
+    if(!session){ alert('Your wallet session expired - reconnect first.'); return; }
+    setAnchorState(jobId, 'pending');
+    try {
+      const d = await anchorWithWallet(base, session, jobId);
+      setAnchorState(jobId, 'done', d.anchor_tx, d.explorer_url);
+    } catch (e) {
+      setAnchorState(jobId, 'idle');
+      alert('Anchor not completed: ' + e.message);
+    }
+  };
 
   function resolveUrl(base, pathOrUrl){
     if(!pathOrUrl) return null;
@@ -737,7 +738,7 @@
   // ---- on-chain anchor row, shown right under each project ----
   function shortTx(tx){ return tx ? tx.slice(0, 10) + '…' + tx.slice(-8) : ''; }
 
-  function anchorMarkup(state, tx, url){
+  function anchorMarkup(state, tx, url, jobId){
     if (state === 'done' && tx) {
       return `<div class="job-anchor">
         <span aria-hidden="true">⛓</span>
@@ -751,7 +752,7 @@
     if (state === 'pending') {
       return `<div class="job-anchor pending"><span aria-hidden="true">⏳</span>
         <div class="job-anchor-main"><div class="job-anchor-title">Anchoring on-chain…</div>
-        <div class="job-anchor-tx">Your download has started. The transaction link appears here in a few seconds.</div></div></div>`;
+        <div class="job-anchor-tx">Confirm the transaction in your wallet. The link appears here once it lands.</div></div></div>`;
     }
     if (state === 'slow') {
       return `<div class="job-anchor pending"><span aria-hidden="true">⏳</span>
@@ -762,13 +763,23 @@
       return `<div class="job-anchor idle"><span aria-hidden="true">⛓</span>
         <div class="job-anchor-main">On-chain anchoring isn't enabled on the server yet.</div></div>`;
     }
-    return `<div class="job-anchor idle"><span aria-hidden="true">⛓</span>
-      <div class="job-anchor-main">Not anchored yet. Download the STEP file and the design is anchored on-chain automatically.</div></div>`;
+    return `<div class="job-anchor idle" style="flex-wrap:wrap"><span aria-hidden="true">⛓</span>
+      <div class="job-anchor-main">
+        <div class="job-anchor-title">Anchor this design on BOT Chain <span style="font-weight:400;opacity:.7">(optional)</span></div>
+        <ul style="margin:8px 0 12px 18px;padding:0;font-size:.85rem;line-height:1.55;">
+          <li><b>Tamper-proof record</b> - a permanent, timestamped entry on BOT Chain that nobody, including us, can edit later.</li>
+          <li><b>Your wallet on record</b> - the wallet you sign with is stored as the submitter, so you can show you registered this design first.</li>
+          <li><b>Verifiable by anyone</b> - the parameters hash, template version and STEP file hash are public, so anyone can re-check the part matches.</li>
+          <li><b>Works without NitoCAD</b> - the full parameters live in the chain's event log, so the proof outlasts any server.</li>
+        </ul>
+        <div style="font-size:.78rem;opacity:.7;margin-bottom:10px;">Optional. Costs a small BOT network fee, paid from your wallet. Anchoring is separate from downloading - skip it if you don't need it.</div>
+      </div>
+      <button class="btn btn-primary" onclick="anchorJob('${jobId}',this)">⛓ Anchor on BOT Chain</button></div>`;
   }
 
   function setAnchorState(jobId, state, tx, url){
     const el = document.getElementById('anchor-' + jobId);
-    if (el) el.innerHTML = anchorMarkup(state, tx, url);
+    if (el) el.innerHTML = anchorMarkup(state, tx, url, jobId);
   }
 
   async function pollAnchor(base, session, jobId){
@@ -831,7 +842,7 @@
         ${paramsText ? `<div class="job-params">${escapeHtml(paramsText)}</div>` : ''}
         ${job.error ? `<div class="job-params job-error">${escapeHtml(job.error)}</div>` : ''}
         <div class="job-actions">${stlLink}${exportButtons}</div>
-        ${job.success ? `<div class="job-anchor-slot" id="anchor-${job.id}">${anchorMarkup(job.anchor_tx ? 'done' : (job.anchor_enabled === false ? 'off' : 'idle'), job.anchor_tx, job.anchor_explorer_url)}</div>` : ''}
+        ${job.success ? `<div class="job-anchor-slot" id="anchor-${job.id}">${anchorMarkup(job.anchor_tx ? 'done' : (job.anchor_enabled === false ? 'off' : 'idle'), job.anchor_tx, job.anchor_explorer_url, job.id)}</div>` : ''}
       </div>
     `;
   }
