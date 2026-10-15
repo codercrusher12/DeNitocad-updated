@@ -608,6 +608,10 @@
 
   // Per-wallet on-chain anchoring: the USER'S wallet signs and sends the
   // anchorDesign() tx (server only prepares + verifies it).
+  function anchorWalletError(e){
+    if (e && (e.code === 4001 || e.code === 'ACTION_REJECTED')) return new Error('You rejected the transaction in your wallet. Nothing was sent.');
+    return new Error((e && (e.message || e.reason)) || 'Wallet error.');
+  }
   async function anchorWithWallet(base, session, jobId){
     const auth = { 'Authorization': 'Bearer ' + session.session_id };
     const prep = await fetch(`${base}/api/jobs/${jobId}/anchor/prepare`, { method: 'POST', headers: auth });
@@ -615,10 +619,39 @@
     if (!prep.ok) throw new Error(p.detail || 'Could not prepare anchor.');
     if (p.already_anchored) return { anchor_tx: p.anchor_tx, explorer_url: p.explorer_url };
     if (!window.ethereum) throw new Error('No wallet found to sign the anchor.');
+    const cfg = await getChainConfig(base).catch(() => ({}));
+    const wantChain = String(p.tx.chainId || cfg.chain_id_hex || '').toLowerCase();
     try {
-      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: p.tx.chainId }] });
-    } catch (e) { /* wallet may already be on the chain, or not support switching */ }
-    const txHash = await window.ethereum.request({ method: 'eth_sendTransaction', params: [p.tx] });
+      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: wantChain }] });
+    } catch (e) {
+      if (e && (e.code === 4902 || e.code === -32603) && cfg.rpc_url) {
+        try {
+          await window.ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: wantChain,
+              chainName: cfg.chain_name || 'BOT Chain',
+              nativeCurrency: { name: 'BOT', symbol: cfg.currency_symbol || 'BOT', decimals: 18 },
+              rpcUrls: [cfg.rpc_url],
+              blockExplorerUrls: cfg.explorer_url ? [cfg.explorer_url] : [],
+            }],
+          });
+        } catch (e2) { throw anchorWalletError(e2); }
+      } else if (e && e.code === 4001) { throw anchorWalletError(e); }
+    }
+    const nowChain = String(await window.ethereum.request({ method: 'eth_chainId' })).toLowerCase();
+    if (wantChain && nowChain !== wantChain) {
+      throw new Error('Your wallet is on the wrong network. Switch it to BOT Chain and try again.');
+    }
+    const accts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    const active = (accts && accts[0] || '').toLowerCase();
+    if (active && session.wallet_address && active !== session.wallet_address.toLowerCase()) {
+      throw new Error('Your wallet is on a different account than the one you signed in with. Switch to ' + shortAddress(session.wallet_address) + ' and try again.');
+    }
+    let txHash;
+    try {
+      txHash = await window.ethereum.request({ method: 'eth_sendTransaction', params: [p.tx] });
+    } catch (e) { throw anchorWalletError(e); }
     for (let i = 0; i < 20; i++) {
       const r = await fetch(`${base}/api/jobs/${jobId}/anchor/confirm`, {
         method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
@@ -759,10 +792,7 @@
         <div class="job-anchor-main"><div class="job-anchor-title">Anchor submitted, still confirming</div>
         <div class="job-anchor-tx">Refresh this page in a minute to see the transaction link.</div></div></div>`;
     }
-    if (state === 'off') {
-      return `<div class="job-anchor idle"><span aria-hidden="true">⛓</span>
-        <div class="job-anchor-main">On-chain anchoring isn't enabled on the server yet.</div></div>`;
-    }
+    if (state === 'off') return '';
     return `<div class="job-anchor idle" style="flex-wrap:wrap"><span aria-hidden="true">⛓</span>
       <div class="job-anchor-main">
         <div class="job-anchor-title">Anchor this design on BOT Chain <span style="font-weight:400;opacity:.7">(optional)</span></div>
@@ -842,7 +872,7 @@
         ${paramsText ? `<div class="job-params">${escapeHtml(paramsText)}</div>` : ''}
         ${job.error ? `<div class="job-params job-error">${escapeHtml(job.error)}</div>` : ''}
         <div class="job-actions">${stlLink}${exportButtons}</div>
-        ${job.success ? `<div class="job-anchor-slot" id="anchor-${job.id}">${anchorMarkup(job.anchor_tx ? 'done' : (job.anchor_enabled === false ? 'off' : 'idle'), job.anchor_tx, job.anchor_explorer_url, job.id)}</div>` : ''}
+        ${job.success ? `<div class="job-anchor-slot" id="anchor-${job.id}">${anchorMarkup(job.anchor_tx ? 'done' : ((job.anchor_enabled === false || (chainConfig && chainConfig.anchor_enabled === false)) ? 'off' : 'idle'), job.anchor_tx, job.anchor_explorer_url, job.id)}</div>` : ''}
       </div>
     `;
   }
@@ -864,6 +894,7 @@
       }
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const jobs = await resp.json();
+      try { await getChainConfig(base); } catch (e) { /* anchor row just stays visible */ }
       jobsLoadingEl.style.display = 'none';
       if (jobs.length === 0) {
         emptyStateEl.style.display = 'block';
