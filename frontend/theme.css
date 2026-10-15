@@ -1,0 +1,108 @@
+/* NitoCAD dark mode. Loaded after each page's own styles.
+   Activated by <html data-theme="dark">, set by theme.js. */
+
+.theme-toggle{
+  flex:none;width:40px;height:40px;border-radius:50%;
+  border:1px solid var(--line);background:transparent;color:var(--ink);
+  display:inline-flex;align-items:center;justify-content:center;
+  cursor:pointer;padding:0;margin-right:8px;transition:border-color .15s ease,color .15s ease;
+}
+.theme-toggle:hover{border-color:var(--orange);color:var(--orange-deep);}
+.theme-toggle:focus-visible{outline:2px solid var(--orange-deep);outline-offset:3px;}
+.theme-toggle svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+.theme-toggle .i-sun{display:none;}
+html[data-theme="dark"] .theme-toggle .i-sun{display:block;}
+html[data-theme="dark"] .theme-toggle .i-moon{display:none;}
+.theme-slot{display:flex;align-items:center;gap:16px;}
+.theme-slot .theme-toggle{margin-right:0;}
+.theme-toggle.floating{position:fixed;right:16px;bottom:16px;z-index:9999;background:var(--paper);margin:0;}
+
+html[data-theme="dark"]{
+  color-scheme:dark;
+  --ink:#E8EDF5;
+  --ink-soft:#9DB0C8;
+  --paper:#0A111C;
+  --fog:#101B2B;
+  --line:#22324A;
+  --orange-deep:#FF8F5E;
+  --gold:#D9B65F;
+  --surface:#111C2E;
+  --deep:#0F2038;
+  --botchain-bright-deep:#3FD6A8;
+}
+
+/* surfaces that were hardcoded white */
+html[data-theme="dark"] footer,
+html[data-theme="dark"] .botchain,
+html[data-theme="dark"] .spec,
+html[data-theme="dark"] .step,
+html[data-theme="dark"] .demo-shell,
+html[data-theme="dark"] .demo-result-card,
+html[data-theme="dark"] .job-card,
+html[data-theme="dark"] .parts,
+html[data-theme="dark"] .callout,
+html[data-theme="dark"] .wp-card,
+html[data-theme="dark"] .wp-stack,
+html[data-theme="dark"] .wp-rule,
+html[data-theme="dark"] .wp-table-wrap,
+html[data-theme="dark"] .wp-note,
+html[data-theme="dark"] .wp-toc,
+html[data-theme="dark"] .prov-pill{background:var(--surface);}
+html[data-theme="dark"] .demo-bar{background:var(--fog);}
+html[data-theme="dark"] .demo-warn{background:rgba(240,101,43,.12);}
+html[data-theme="dark"] header{background:rgba(10,17,28,.88);}
+
+/* form controls */
+html[data-theme="dark"] input,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select,
+html[data-theme="dark"] .demo-cfg button,
+html[data-theme="dark"] .demo-examples button{background:var(--surface);color:var(--ink);border-color:var(--line);}
+html[data-theme="dark"] ::placeholder{color:#6F83A0;}
+
+/* hardcoded body text colors */
+html[data-theme="dark"] .legal p,
+html[data-theme="dark"] .legal li,
+html[data-theme="dark"] .wp-lede,
+html[data-theme="dark"] .wp-article p,
+html[data-theme="dark"] .wp-article li,
+html[data-theme="dark"] .wp-article dd,
+html[data-theme="dark"] .wp-table th,
+html[data-theme="dark"] .wp-table td{color:#C3CFDE;}
+html[data-theme="dark"] .wp-table thead th{color:var(--ink);}
+html[data-theme="dark"] .wp-rule{color:var(--ink) !important;}
+html[data-theme="dark"] .draft{background:#2A2312;border-color:#5C4C1E;color:#E6CF8A;}
+html[data-theme="dark"] .part-more{color:var(--ink-soft);}
+html[data-theme="dark"] .parts button{color:var(--ink);border-color:#5C7090;}
+
+/* var(--ink) was used as a dark panel color, so pin those panels */
+html[data-theme="dark"] .audience,
+html[data-theme="dark"] .pricing{background:var(--deep);}
+html[data-theme="dark"] .rig{background:#12294A;}
+html[data-theme="dark"] .svc.core{background:var(--deep);border-color:#2C4A75;}
+html[data-theme="dark"] .chat-bubble.user,
+html[data-theme="dark"] .wp-steps>li::before{background:#1E3F6E;color:#fff;}
+html[data-theme="dark"] .btn-ghost:hover,
+html[data-theme="dark"] .wp-btn-ghost:hover{background:var(--ink);border-color:var(--ink);color:#0A111C;}
+html[data-theme="dark"] .wp-timeline>li::before{background:var(--paper);}
+
+/* the 3D viewport keeps its light scene so models stay readable */
+html[data-theme="dark"] .demo-viewer{background:#EDF2F4;}
+
+/* nav logo mark is dark line art */
+html[data-theme="dark"] .logo-icon{filter:invert(1) hue-rotate(180deg) brightness(1.15);}
+
+/* subtle shadows read as halos on dark */
+html[data-theme="dark"] .spec,
+html[data-theme="dark"] .demo-shell,
+html[data-theme="dark"] .rig{box-shadow:none;}
+
+html[data-theme="dark"] .wp-hero{background:linear-gradient(180deg,#0F1B2D 0%,var(--paper) 100%);}
+html[data-theme="dark"] .wp-btn-ghost{color:var(--ink);border-color:var(--ink);}
+
+/* white paper status tags */
+html[data-theme="dark"] .tag-fresh{background:rgba(63,214,168,.12);color:#5FE0B8;border-color:rgba(63,214,168,.35);}
+html[data-theme="dark"] .tag-ok{background:rgba(110,160,240,.14);color:#9CC0FA;border-color:rgba(110,160,240,.4);}
+html[data-theme="dark"] .tag-stale{background:rgba(230,170,60,.14);color:#F0C36B;border-color:rgba(230,170,60,.4);}
+html[data-theme="dark"] .tag-unk{background:rgba(157,176,200,.12);color:#B6C4D8;border-color:rgba(157,176,200,.35);}
+html[data-theme="dark"] .tag-miss{background:rgba(240,100,85,.14);color:#FF9A8C;border-color:rgba(240,100,85,.4);}
