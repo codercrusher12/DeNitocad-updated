@@ -177,16 +177,23 @@ function replyFor(part, isEdit) {
 }
 
 /* ============================================================ server api */
-async function api(method, path, body) {
+async function api(method, path, body, ms) {
   const s = Auth.getSession();
   if (!s) return { authExpired: true };
   let res;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), ms || 170000);
   try {
     res = await fetch(BASE + path, {
-      method, body: body ? JSON.stringify(body) : undefined,
+      method, body: body ? JSON.stringify(body) : undefined, signal: ctl.signal,
       headers: { Authorization: "Bearer " + s.session_id, ...(body ? { "Content-Type": "application/json" } : {}) }
     });
-  } catch (e) { return { ok: false, status: 0, detail: "I could not reach the server. Check your connection and try again." }; }
+  } catch (e) {
+    clearTimeout(timer);
+    return { ok: false, status: 0, detail: e && e.name === "AbortError"
+      ? "This is taking much longer than usual, so I stopped waiting. The build may still be running. Open this chat again in a minute, or try a simpler version of the part."
+      : "I could not reach the server. Check your connection and try again." };
+  }
+  clearTimeout(timer);
   if (res.status === 401) return { authExpired: true };
   let data = null; try { data = await res.json(); } catch (e) { /* empty body */ }
   const d = data && (data.detail || data.error);
@@ -556,7 +563,14 @@ function showWorking() {
     const rows = el.querySelectorAll(".work-row");
     if (i < rows.length) { rows[i].className = "work-row done"; rows[i].querySelector(".tick").innerHTML = '<svg viewBox="0 0 12 12"><path d="M2 6.5l2.5 2.5L10 3.5"/></svg>'; }
     i++;
-    if (i < rows.length) rows[i].className = "work-row live"; else clearInterval(workTimer);
+    if (i < rows.length) rows[i].className = "work-row live";
+    else {
+      clearInterval(workTimer);
+      const more = document.createElement("div"); more.className = "work-row live";
+      more.innerHTML = '<span class="tick"></span><span>Still building. Detailed parts can take a minute or two.</span>';
+      el.querySelector(".working").appendChild(more);
+      setTimeout(() => { if (more.isConnected) more.lastChild.textContent = "This one is taking longer than usual. You can keep waiting."; }, 60000);
+    }
   }, 1100);
 }
 function hideWorking() { clearInterval(workTimer); const w = $("working"); if (w) w.remove(); }
