@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Civil Tools | NitoCAD</title>
+<meta name="description" content="Terrain from survey points, alignments, earthworks quantities, drainage hydraulics and retaining wall checks.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,700;1,9..144,500&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{--ink:#1C1C1E;--ink-soft:#5E5E63;--orange:#1C1C1E;--dot:#E8601C;--orange-deep:#0E0E10;--paper:#FAFAF8;--fog:#F0F0EE;--line:#E3E3E0;--ok:#13794f;--bad:#b3261e;--radius:12px;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:'IBM Plex Sans',sans-serif;-webkit-font-smoothing:antialiased;line-height:1.5;}
+  a{color:var(--orange-deep);}
+  h1,h2,h3{font-family:'Fraunces',serif;font-weight:700;margin:0;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 20px;}
+  header{border-bottom:1px solid var(--line);}
+  header .wrap{display:flex;align-items:center;justify-content:space-between;height:64px;}
+  .logo{font-family:'Fraunces',serif;font-style:italic;font-size:1.4rem;text-decoration:none;color:var(--ink);}
+  .logo span{color:var(--dot);}
+  nav a{margin-left:18px;text-decoration:none;color:var(--ink-soft);font-size:.92rem;font-weight:500;}
+  main{padding:28px 0 72px;}
+  h1{font-size:2.1rem;margin-bottom:6px;}
+  .lead{color:var(--ink-soft);font-weight:600;max-width:70ch;margin:0 0 18px;}
+  .banner{background:#fff6e5;border:1px solid #f0d9a8;border-radius:var(--radius);padding:12px 16px;font-size:.9rem;margin-bottom:18px;}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;border-bottom:1px solid var(--line);}
+  .tabs button{background:none;border:0;border-bottom:3px solid transparent;padding:10px 14px;font:600 .95rem 'IBM Plex Sans',sans-serif;color:var(--ink-soft);cursor:pointer;}
+  .tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--orange);}
+  .panel{display:none;} .panel.on{display:block;}
+  .card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:18px;margin-bottom:16px;}
+  .card h3{font-size:1.15rem;margin-bottom:10px;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;}
+  label{display:flex;flex-direction:column;font-size:.82rem;font-weight:600;color:var(--ink-soft);gap:4px;}
+  input,select,textarea{font:400 .95rem 'IBM Plex Sans',sans-serif;border:1px solid var(--line);border-radius:8px;padding:8px 10px;color:var(--ink);background:#fff;width:100%;}
+  textarea{font-family:'IBM Plex Mono',monospace;font-size:.82rem;min-height:130px;resize:vertical;}
+  .btn{display:inline-flex;align-items:center;padding:10px 18px;border-radius:999px;border:1.5px solid var(--orange);background:var(--orange);color:#fff;font:600 .9rem 'IBM Plex Sans',sans-serif;cursor:pointer;}
+  .btn.ghost{background:transparent;color:var(--ink);border-color:var(--ink);}
+  .btn:disabled{opacity:.5;cursor:wait;}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;align-items:center;}
+  .out{margin-top:14px;}
+  table{border-collapse:collapse;width:100%;font-size:.85rem;}
+  th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:right;white-space:nowrap;}
+  th:first-child,td:first-child{text-align:left;}
+  th{color:var(--ink-soft);font-weight:600;}
+  .scroll{overflow-x:auto;max-height:340px;overflow-y:auto;}
+  .kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px 18px;}
+  .kv div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:4px 0;font-size:.9rem;gap:10px;}
+  .kv b{font-family:'IBM Plex Mono',monospace;font-weight:500;}
+  .pass{color:var(--ok);font-weight:700;} .fail{color:var(--bad);font-weight:700;} .info{color:var(--ink-soft);font-weight:700;}
+  .err{background:#fdecea;border:1px solid #f5c2bd;color:#7a1c14;border-radius:8px;padding:10px 12px;font-size:.9rem;}
+  .warn{background:#fff6e5;border:1px solid #f0d9a8;border-radius:8px;padding:8px 12px;font-size:.88rem;margin-top:8px;}
+  .note{color:var(--ink-soft);font-size:.85rem;margin-top:8px;}
+  svg.chart{width:100%;height:auto;background:#fff;border:1px solid var(--line);border-radius:8px;}
+  details{margin-bottom:14px;} summary{cursor:pointer;font-weight:600;}
+  #gate{display:none;text-align:center;padding:60px 0;}
+  @media(max-width:700px){h1{font-size:1.6rem;} nav a:not(:last-child){display:none;}}
+</style>
+<link rel="stylesheet" href="theme.css">
+<script src="theme.js"></script>
+</head>
+<body>
+<header><div class="wrap"><a href="index.html" class="logo">Nit<span>o</span>CAD</a>
+<nav><a href="studio.html">CAD Studio</a><a href="pricing.html">Pricing</a><a href="exports.html">Exports</a></nav></div></header>
+
+<main><div class="wrap">
+  <div id="gate"><h2>Sign in to use the civil tools</h2><p class="lead" style="margin:10px auto 18px">They use your NitoCAD account, and they are free.</p><a class="btn" href="studio.html">Sign in through CAD Studio</a></div>
+
+  <div id="app">
+    <h1>Civil tools</h1>
+    <p class="lead">Surface from survey points, alignments, earthworks quantities, drainage and retaining wall checks. SI units.</p>
+    <div class="banner"><b>Screening level only.</b> These are textbook calculations for early sizing. Results are not a design, and a pass here is not compliance with any standard. A licensed engineer must verify anything that gets built.</div>
+
+    <details><summary>Criteria used for the pass and fail checks</summary>
+      <p class="note">These limits are yours to set. The starting values are generic round numbers, not any country's standard. Edit the JSON to match the standard your project follows. Set a field to null to skip that check.</p>
+      <textarea id="criteria" spellcheck="false"></textarea>
+    </details>
+
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" data-tab="terrain">Survey and terrain</button>
+      <button role="tab" aria-selected="false" data-tab="road">Road and earthworks</button>
+      <button role="tab" aria-selected="false" data-tab="drain">Drainage</button>
+      <button role="tab" aria-selected="false" data-tab="wall">Retaining wall</button>
+    </div>
+
+    <!-- TERRAIN -->
+    <section class="panel on" id="p-terrain">
+      <div class="card">
+        <h3>Survey points</h3>
+        <p class="note">One point per line. Use a header row (for example <span class="mono">id,easting,northing,elevation</span>) or just <span class="mono">x,y,z</span>. Commas, tabs, semicolons and spaces all work.</p>
+        <textarea id="survey" spellcheck="false" placeholder="id,easting,northing,elevation&#10;1,0,0,100.0&#10;2,25,0,100.6"></textarea>
+        <div class="grid" style="margin-top:10px">
+          <label>Units<select id="units"><option value="m">Metres</option><option value="ft">Feet</option></select></label>
+          <label>Drop triangles with an edge longer than (m, optional)<input id="maxEdge" type="number" min="0" step="any" placeholder="none"></label>
+        </div>
+        <div class="row">
+          <button class="btn" id="btnTerrain">Build surface</button>
+          <button class="btn ghost" id="btnSample">Load sample survey</button>
+          <button class="btn ghost" id="btnStl" disabled>Download surface STL</button>
+        </div>
+        <div class="out" id="o-terrain"></div>
+      </div>
+    </section>
+
+    <!-- ROAD -->
+    <section class="panel" id="p-road">
+      <div class="card">
+        <h3>Alignment</h3>
+        <p class="note">Uses the survey points from the first tab. Horizontal: one PI per line as <span class="mono">x,y,radius</span> (radius 0 for a sharp corner). Vertical: one PVI per line as <span class="mono">station,elevation,curve length</span>.</p>
+        <div class="grid">
+          <label>Horizontal PIs (x, y, radius)<textarea id="pis" spellcheck="false"></textarea></label>
+          <label>Vertical PVIs (station, elevation, curve length)<textarea id="pvis" spellcheck="false"></textarea></label>
+        </div>
+        <h3 style="margin-top:16px">Road section</h3>
+        <div class="grid">
+          <label>Lane width (m)<input id="t_lane" type="number" step="any" value="3.5"></label>
+          <label>Lanes<input id="t_lanes" type="number" step="1" value="2"></label>
+          <label>Shoulder each side (m)<input id="t_sh" type="number" step="any" value="1.5"></label>
+          <label>Crossfall (%)<input id="t_cf" type="number" step="any" value="2.5"></label>
+          <label>Shoulder crossfall (%)<input id="t_scf" type="number" step="any" value="4"></label>
+          <label>Pavement thickness (m)<input id="t_th" type="number" step="any" value="0.3"></label>
+          <label>Cut slope (H per 1 V)<input id="t_cut" type="number" step="any" value="2"></label>
+          <label>Fill slope (H per 1 V)<input id="t_fill" type="number" step="any" value="2"></label>
+          <label>Station interval (m)<input id="t_int" type="number" step="any" value="20"></label>
+          <label>Fill factor<input id="t_ff" type="number" step="any" value="1"></label>
+          <label>Topsoil strip depth (m)<input id="t_top" type="number" step="any" value="0"></label>
+          <label>Kerbs<select id="t_kerb"><option value="false">No</option><option value="true">Yes</option></select></label>
+        </div>
+        <div class="row">
+          <button class="btn" id="btnAlign">Check alignment</button>
+          <button class="btn" id="btnEarth">Calculate earthworks and quantities</button>
+          <button class="btn ghost" id="btnRoadSample">Load sample alignment</button>
+          <button class="btn ghost" id="btnCsv" disabled>Download station table (CSV)</button>
+        </div>
+        <div class="out" id="o-road"></div>
+      </div>
+    </section>
+
+    <!-- DRAINAGE -->
+    <section class="panel" id="p-drain">
+      <div class="card"><h3>Peak flow (rational method)</h3>
+        <div class="grid">
+          <label>Runoff coefficient C<input id="r_c" type="number" step="any" value="0.7"></label>
+          <label>Catchment area (ha)<input id="r_a" type="number" step="any" value="5"></label>
+          <label>Rainfall intensity (mm/h)<input id="r_i" type="number" step="any" value="100"></label>
+          <label>Flow path length (m, optional)<input id="r_l" type="number" step="any"></label>
+          <label>Flow path slope (m/m, optional)<input id="r_s" type="number" step="any"></label>
+        </div>
+        <p class="note">No rainfall data is built in. Use intensities from your site's records or design tables.</p>
+        <div class="row"><button class="btn" id="btnRational">Calculate flow</button></div><div class="out" id="o-rational"></div></div>
+      <div class="card"><h3>Pipe</h3>
+        <div class="grid">
+          <label>Flow (m3/s)<input id="p_q" type="number" step="any" value="0.5"></label>
+          <label>Slope (m/m)<input id="p_s" type="number" step="any" value="0.005"></label>
+          <label>Manning n<input id="p_n" type="number" step="any" value="0.013"></label>
+          <label>Diameter (mm, blank to select one)<input id="p_d" type="number" step="any"></label>
+          <label>Max fill when selecting<input id="p_f" type="number" step="any" value="0.8"></label>
+        </div>
+        <div class="row"><button class="btn" id="btnPipe">Check or size pipe</button></div><div class="out" id="o-pipe"></div></div>
+      <div class="card"><h3>Open channel</h3>
+        <div class="grid">
+          <label>Flow (m3/s)<input id="c_q" type="number" step="any" value="5"></label>
+          <label>Bottom width (m)<input id="c_b" type="number" step="any" value="3"></label>
+          <label>Side slope (H per 1 V)<input id="c_z" type="number" step="any" value="2"></label>
+          <label>Slope (m/m)<input id="c_s" type="number" step="any" value="0.001"></label>
+          <label>Manning n<input id="c_n" type="number" step="any" value="0.025"></label>
+        </div>
+        <div class="row"><button class="btn" id="btnChannel">Calculate depth and velocity</button></div><div class="out" id="o-channel"></div></div>
+      <div class="card"><h3>Box culvert</h3>
+        <div class="grid">
+          <label>Design flow (m3/s)<input id="v_q" type="number" step="any" value="3"></label>
+          <label>Clear width (m)<input id="v_w" type="number" step="any" value="1.5"></label>
+          <label>Clear height (m)<input id="v_h" type="number" step="any" value="1.2"></label>
+          <label>Length (m)<input id="v_l" type="number" step="any" value="12"></label>
+          <label>Slope (m/m)<input id="v_s" type="number" step="any" value="0.01"></label>
+          <label>Manning n<input id="v_n" type="number" step="any" value="0.013"></label>
+          <label>Cells<input id="v_b" type="number" step="1" value="1"></label>
+          <label>Earth cover over roof (m)<input id="v_cov" type="number" step="any" value="1"></label>
+          <label>Live surcharge (kPa)<input id="v_live" type="number" step="any" value="10"></label>
+          <label>Wall thickness (m)<input id="v_wt" type="number" step="any" value="0.2"></label>
+          <label>Slab thickness (m)<input id="v_st" type="number" step="any" value="0.25"></label>
+        </div>
+        <div class="row"><button class="btn" id="btnCulvert">Check culvert and loads</button></div><div class="out" id="o-culvert"></div></div>
+    </section>
+
+    <!-- WALL -->
+    <section class="panel" id="p-wall">
+      <div class="card"><h3>Cantilever retaining wall</h3>
+        <div class="grid">
+          <label>Stem height (m)<input id="w_h" type="number" step="any" value="5.4"></label>
+          <label>Stem thickness at base (m)<input id="w_tb" type="number" step="any" value="0.5"></label>
+          <label>Stem thickness at top (m)<input id="w_tt" type="number" step="any" value="0.3"></label>
+          <label>Base width (m)<input id="w_bw" type="number" step="any" value="3.6"></label>
+          <label>Base thickness (m)<input id="w_bt" type="number" step="any" value="0.6"></label>
+          <label>Toe length (m)<input id="w_toe" type="number" step="any" value="0.8"></label>
+          <label>Backfill unit weight (kN/m3)<input id="w_g" type="number" step="any" value="18"></label>
+          <label>Backfill friction angle (deg)<input id="w_phi" type="number" step="any" value="30"></label>
+          <label>Foundation friction angle (deg)<input id="w_fphi" type="number" step="any" value="30"></label>
+          <label>Surcharge (kPa)<input id="w_q" type="number" step="any" value="0"></label>
+          <label>Allowable bearing (kPa, optional)<input id="w_ab" type="number" step="any"></label>
+        </div>
+        <p class="note">Level backfill and Rankine earth pressure. No water, no seismic load, no passive resistance, no global slope check.</p>
+        <div class="row"><button class="btn" id="btnWall">Check stability</button></div><div class="out" id="o-wall"></div></div>
+    </section>
+  </div>
+</div></main>
+
+<script src="config.js"></script>
+<script src="auth.js"></script>
+<script>
+"use strict";
+const Auth = window.NitoAuth;
+const $ = (id) => document.getElementById(id);
+const BASE = Auth.API_BASE;
+const num = (id) => { const v = $(id).value.trim(); return v === "" ? null : Number(v); };
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const f = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v)) ? "-" : Number(v).toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: 0 });
+let lastStl = null, lastCsv = null;
+
+async function call(path, method, body) {
+  const s = Auth.getSession();
+  if (!s) { show(false); return { error: "Please sign in first." }; }
+  let res;
+  try {
+    res = await fetch(BASE + path, { method, headers: { Authorization: "Bearer " + s.session_id, ...(body ? { "Content-Type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  } catch (e) { return { error: "Could not reach the server. Check your connection." }; }
+  if (res.status === 401) { Auth.clearSession(); show(false); return { error: "Your session ended. Sign in again." }; }
+  let data = null; try { data = await res.json(); } catch (e) { /* empty */ }
+  if (!res.ok) {
+    const d = data && data.detail;
+    if (res.status === 429) return { error: "Too many requests. Wait a minute and try again." };
+    return { error: typeof d === "string" ? d : "That input was not accepted. Check the numbers and try again." };
+  }
+  return { data };
+}
+function criteria() {
+  try { return JSON.parse($("criteria").value); } catch (e) { return undefined; }
+}
+function needCriteria(out) {
+  if (criteria() === undefined) { out.innerHTML = '<div class="err">The criteria box is not valid JSON.</div>'; return false; }
+  return true;
+}
+function kv(obj) { return '<div class="kv">' + obj.map(([k, v]) => `<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join("") + "</div>"; }
+function table(head, rows) {
+  return '<div class="scroll"><table><thead><tr>' + head.map((h) => `<th>${esc(h)}</th>`).join("") + "</tr></thead><tbody>" +
+    rows.map((r) => "<tr>" + r.map((c) => `<td>${esc(c)}</td>`).join("") + "</tr>").join("") + "</tbody></table></div>";
+}
+function warns(list) { return (list || []).map((w) => `<div class="warn">${esc(w)}</div>`).join(""); }
+function findings(c) {
+  if (!c) return "";
+  const rows = c.findings.map((x) => `<tr><td>${esc(x.check)}</td><td style="text-align:left">${esc(x.message)}</td><td class="${x.status}">${x.status.toUpperCase()}</td></tr>`).join("");
+  return `<h3 style="margin-top:16px">Checks against: ${esc(c.criteria_name)}</h3><p class="note">${c.passed} passed, ${c.failed} failed. ${esc(c.statement)}</p>` +
+    `<div class="scroll"><table><tbody>${rows}</tbody></table></div>`;
+}
+function notes(list) { return (list || []).map((n) => `<p class="note">${esc(n)}</p>`).join(""); }
+function chart(series, xlabel, ylabel) {
+  const W = 640, H = 220, P = 40;
+  const xs = series.flatMap((s) => s.pts.map((p) => p[0])), ys = series.flatMap((s) => s.pts.map((p) => p[1]));
+  if (!xs.length) return "";
+  let x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (y1 === y0) { y1 += 1; y0 -= 1; } const pad = (y1 - y0) * 0.08; y0 -= pad; y1 += pad;
+  const X = (x) => P + (x - x0) / (x1 - x0 || 1) * (W - P - 10), Y = (y) => H - P + 8 - (y - y0) / (y1 - y0) * (H - P - 4);
+  const lines = series.map((s) => `<polyline fill="none" stroke="${s.color}" stroke-width="2" points="${s.pts.map((p) => X(p[0]).toFixed(1) + "," + Y(p[1]).toFixed(1)).join(" ")}"/>`).join("");
+  const legend = series.map((s, i) => `<text x="${P + 6 + i * 150}" y="14" font-size="11" fill="${s.color}">${esc(s.name)}</text>`).join("");
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(ylabel)} against ${esc(xlabel)}">
+    <line x1="${P}" y1="${H - P + 8}" x2="${W - 10}" y2="${H - P + 8}" stroke="#999"/><line x1="${P}" y1="4" x2="${P}" y2="${H - P + 8}" stroke="#999"/>
+    <text x="${P}" y="${H - 8}" font-size="10" fill="#666">${f(x0, 0)}</text><text x="${W - 40}" y="${H - 8}" font-size="10" fill="#666">${f(x1, 0)} ${esc(xlabel)}</text>
+    <text x="2" y="${Y(y1) + 4}" font-size="10" fill="#666">${f(y1, 1)}</text><text x="2" y="${Y(y0) + 4}" font-size="10" fill="#666">${f(y0, 1)}</text>${lines}${legend}</svg>`;
+}
+function busy(btn, on) { btn.disabled = on; }
+async function run(btn, out, fn) {
+  busy(btn, true); out.innerHTML = '<p class="note">Working...</p>';
+  try { out.innerHTML = await fn(); } catch (e) { out.innerHTML = '<div class="err">Something went wrong in the page. Reload and try again.</div>'; }
+  busy(btn, false);
+}
+const fail = (r) => `<div class="err">${esc(r.error)}</div>`;
+
+// ---------- tabs and gate
+function show(signedIn) { $("gate").style.display = signedIn ? "none" : "block"; $("app").style.display = signedIn ? "block" : "none"; }
+document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll(".tabs button").forEach((x) => x.setAttribute("aria-selected", x === b ? "true" : "false"));
+  document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("on", p.id === "p-" + b.dataset.tab));
+}));
+
+// ---------- samples
+function sampleSurvey() {
+  const rows = ["id,easting,northing,elevation"]; let id = 1;
+  for (let x = -100; x <= 600; x += 25) for (let y = -100; y <= 100; y += 25) {
+    const z = 100 + 0.012 * x + 1.5 * Math.sin(x / 90) + 0.8 * Math.cos(y / 40);
+    rows.push(`${id++},${x},${y},${z.toFixed(2)}`);
+  }
+  return rows.join("\n");
+}
+$("btnSample").onclick = () => { $("survey").value = sampleSurvey(); };
+$("btnRoadSample").onclick = () => {
+  $("pis").value = "0,0,0\n300,0,150\n500,80,0";
+  $("pvis").value = "0,100,0\n250,103,80\n560,101,0";
+  if (!$("survey").value.trim()) $("survey").value = sampleSurvey();
+};
+
+// ---------- terrain
+function surveyBody() {
+  const b = { text: $("survey").value, units: $("units").value };
+  const e = num("maxEdge"); if (e) b.max_edge_m = e; return b;
+}
+$("btnTerrain").onclick = () => run($("btnTerrain"), $("o-terrain"), async () => {
+  if (!$("survey").value.trim()) return '<div class="err">Paste survey points first, or load the sample.</div>';
+  const r = await call("/civil/terrain", "POST", { ...surveyBody(), include_stl: true });
+  if (r.error) return fail(r);
+  const t = r.data.terrain, s = r.data.survey;
+  lastStl = r.data.stl; $("btnStl").disabled = !lastStl;
+  return kv([["Points used", f(t.points, 0)], ["Triangles", f(t.triangles, 0)], ["Plan area (m2)", f(t.plan_area_m2, 0)],
+    ["Surface area (m2)", f(t.surface_area_m2, 0)], ["Lowest point (m)", f(t.z_min)], ["Highest point (m)", f(t.z_max)],
+    ["East range (m)", `${f(t.x_min, 1)} to ${f(t.x_max, 1)}`], ["North range (m)", `${f(t.y_min, 1)} to ${f(t.y_max, 1)}`]]) + warns(s.warnings) +
+    '<p class="note">The surface fills the outer boundary of the points. If the site is not convex, set a maximum edge length to drop triangles that bridge empty ground.</p>';
+});
+$("btnStl").onclick = () => {
+  if (!lastStl) return;
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([lastStl], { type: "model/stl" }));
+  a.download = "terrain-surface.stl"; a.click(); URL.revokeObjectURL(a.href);
+};
+
+// ---------- road
+function lines(id, n) {
+  return $(id).value.split(/\n/).map((l) => l.trim()).filter(Boolean).map((l) => l.split(/[\s,;]+/).map(Number));
+}
+function alignmentBody() {
+  const pis = lines("pis"), pvis = lines("pvis");
+  if (pis.length < 2 || pvis.length < 2) return null;
+  if (pis.some((p) => p.length < 2 || p.some(Number.isNaN)) || pvis.some((p) => p.length < 3 || p.some(Number.isNaN))) return "bad";
+  return { pis: pis.map((p) => [p[0], p[1]]), radii: pis.map((p) => p[2] || 0), pvis: pvis.map((p) => [p[0], p[1], p[2]]) };
+}
+function template() {
+  return { lane_width_m: num("t_lane"), lane_count: num("t_lanes"), shoulder_width_m: num("t_sh"), crossfall_pct: num("t_cf"),
+    shoulder_crossfall_pct: num("t_scf"), pavement_thickness_m: num("t_th"), cut_slope: num("t_cut"), fill_slope: num("t_fill"),
+    has_kerbs: $("t_kerb").value === "true" };
+}
+function alignView(d) {
+  const curves = d.horizontal_curves.map((c) => [c.pi, f(c.radius, 1), f(c.deflection_deg, 2), c.direction, f(c.tangent, 2), f(c.length, 2), f(c.tc_station, 2), f(c.ct_station, 2)]);
+  const vc = d.vertical_curves.map((c) => [c.pvi, c.type, f(c.length, 1), f(c.grade_in_pct, 2) + "%", f(c.grade_out_pct, 2) + "%", c.k_value ? f(c.k_value, 1) : "-"]);
+  return kv([["Alignment length (m)", f(d.length_m, 2)], ["Steepest grade", f(d.max_grade_pct, 2) + "%"]]) +
+    (curves.length ? "<h3 style='margin-top:14px'>Horizontal curves</h3>" + table(["PI", "Radius (m)", "Deflection (deg)", "Turn", "Tangent (m)", "Length (m)", "TC station", "CT station"], curves) : "") +
+    (vc.length ? "<h3 style='margin-top:14px'>Vertical curves</h3>" + table(["PVI", "Type", "Length (m)", "Grade in", "Grade out", "K"], vc) : "") +
+    findings(d.checks);
+}
+$("btnAlign").onclick = () => run($("btnAlign"), $("o-road"), async () => {
+  if (!needCriteria($("o-road"))) return $("o-road").innerHTML;
+  const a = alignmentBody(); if (!a) return '<div class="err">Enter at least 2 PIs and 2 PVIs, or load the sample.</div>';
+  if (a === "bad") return '<div class="err">Each PI needs x, y (and a radius) and each PVI needs station, elevation and curve length, all numbers.</div>';
+  const r = await call("/civil/alignment", "POST", { ...a, station_interval_m: num("t_int"), lane_width_m: num("t_lane"), crossfall_pct: num("t_cf"), criteria: criteria() });
+  if (r.error) return fail(r);
+  const st = r.data.stations;
+  return alignView(r.data) + "<h3 style='margin-top:14px'>Design profile</h3>" + chart([{ name: "Design level (m)", color: "#1C1C1E", pts: st.map((s) => [s.station, s.design_z]) }], "station (m)", "level") +
+    "<h3 style='margin-top:14px'>Stations</h3>" + table(["Station", "Easting", "Northing", "Bearing", "Design level", "Grade %"], st.map((s) => [f(s.station, 1), f(s.x, 2), f(s.y, 2), f(s.bearing_deg, 2), f(s.design_z, 3), f(s.grade_pct, 2)]));
+});
+$("btnEarth").onclick = () => run($("btnEarth"), $("o-road"), async () => {
+  if (!needCriteria($("o-road"))) return $("o-road").innerHTML;
+  if (!$("survey").value.trim()) return '<div class="err">Add survey points on the first tab, or load the sample.</div>';
+  const a = alignmentBody(); if (!a) return '<div class="err">Enter at least 2 PIs and 2 PVIs, or load the sample.</div>';
+  if (a === "bad") return '<div class="err">Each PI needs x, y (and a radius) and each PVI needs station, elevation and curve length, all numbers.</div>';
+  const body = { survey: surveyBody(), alignment: a, template: template(), station_interval_m: num("t_int"), fill_factor: num("t_ff"), topsoil_strip_depth_m: num("t_top"), criteria: criteria() };
+  const r = await call("/civil/earthworks", "POST", body);
+  if (r.error) return fail(r);
+  const d = r.data, q = d.quantities, st = d.stations.filter((s) => s.status === "ok");
+  lastCsv = "station,ground_z,formation_z,cut_area_m2,fill_area_m2,cut_volume_m3,fill_volume_m3,mass_ordinate_m3\n" +
+    st.map((s) => [s.station, s.ground_z, s.formation_z, s.cut_area_m2, s.fill_area_m2, s.cut_volume_m3, s.fill_volume_m3, s.mass_ordinate_m3].map((v) => Number(v).toFixed(3)).join(",")).join("\n");
+  $("btnCsv").disabled = false;
+  const layers = q.pavement_layers.map((l) => [l.name, f(l.thickness_m, 3), f(l.volume_m3, 1)]);
+  return "<h3>Quantities</h3>" + kv([["Cut (m3)", f(q.cut_m3, 0)], ["Fill (m3)", f(q.fill_m3, 0)], ["Fill with factor (m3)", f(q.fill_m3_with_factor, 0)], ["Net, cut minus fill (m3)", f(q.net_m3, 0)],
+    ["Carriageway area (m2)", f(q.carriageway_area_m2, 0)], ["Shoulder area (m2)", f(q.shoulder_area_m2, 0)], ["Kerb length (m)", f(q.kerb_length_m, 0)],
+    ["Topsoil strip area (m2)", f(q.topsoil_strip_area_m2, 0)], ["Topsoil strip volume (m3)", f(q.topsoil_strip_volume_m3, 0)]]) +
+    warns(d.warnings) + warns(d.survey.warnings) + "<h3 style='margin-top:14px'>Pavement layers</h3>" + table(["Layer", "Thickness (m)", "Volume (m3)"], layers) +
+    "<h3 style='margin-top:14px'>Ground and formation</h3>" + chart([{ name: "Ground (m)", color: "#5E5E63", pts: st.map((s) => [s.station, s.ground_z]) }, { name: "Formation (m)", color: "#1C1C1E", pts: st.map((s) => [s.station, s.formation_z]) }], "station (m)", "level") +
+    "<h3 style='margin-top:14px'>Mass haul ordinate</h3>" + chart([{ name: "Cumulative cut minus fill (m3)", color: "#13794f", pts: st.map((s) => [s.station, s.mass_ordinate_m3]) }], "station (m)", "volume") +
+    "<h3 style='margin-top:14px'>Sections</h3>" + table(["Station", "Ground", "Formation", "Cut area", "Fill area", "Cut vol", "Fill vol", "Catch L", "Catch R"],
+      st.map((s) => [f(s.station, 1), f(s.ground_z, 2), f(s.formation_z, 2), f(s.cut_area_m2, 2), f(s.fill_area_m2, 2), f(s.cut_volume_m3, 1), f(s.fill_volume_m3, 1), f(s.left_catch_offset_m, 1), f(s.right_catch_offset_m, 1)])) +
+    `<p class="note">Volumes use the average end area method on ${esc(d.assumptions.volume_method === "average end area" ? "section" : "")} sections. Side drains are not modelled.</p>` + findings(d.checks);
+});
+$("btnCsv").onclick = () => {
+  if (!lastCsv) return;
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([lastCsv], { type: "text/csv" })); a.download = "earthworks-stations.csv"; a.click(); URL.revokeObjectURL(a.href);
+};
+
+// ---------- drainage
+$("btnRational").onclick = () => run($("btnRational"), $("o-rational"), async () => {
+  const b = { runoff_coeff: num("r_c"), area_ha: num("r_a"), intensity_mm_h: num("r_i") };
+  if (num("r_l") !== null && num("r_s") !== null) { b.flow_length_m = num("r_l"); b.slope_m_per_m = num("r_s"); }
+  const r = await call("/civil/hydrology/rational", "POST", b); if (r.error) return fail(r);
+  const d = r.data;
+  return kv([["Peak flow (m3/s)", f(d.flow_m3s, 4)], ["Intensity (mm/h)", f(d.intensity_mm_h, 1)], ["Time of concentration (min)", d.time_of_concentration_min === null ? "-" : f(d.time_of_concentration_min, 1)]]) + notes(d.notes);
+});
+function pipeView(d) {
+  if (d.status !== "ok") return `<div class="warn">The flow is more than this pipe carries as free-surface flow (${f(d.q_max_free_surface_m3s, 3)} m3/s).</div>` + findings(d.checks);
+  return kv([["Diameter (mm)", f(d.selected_diameter_mm, 0)], ["Full capacity (m3/s)", f(d.q_full_m3s, 3)], ["Depth (m)", f(d.depth_m, 3)], ["Fill ratio", f(d.fill_ratio, 3)], ["Velocity (m/s)", f(d.velocity_ms, 2)], ["Froude number", f(d.froude, 2)]]) + findings(d.checks);
+}
+$("btnPipe").onclick = () => run($("btnPipe"), $("o-pipe"), async () => {
+  if (!needCriteria($("o-pipe"))) return $("o-pipe").innerHTML;
+  const b = { flow_m3s: num("p_q"), slope: num("p_s"), n: num("p_n"), max_fill_ratio: num("p_f"), criteria: criteria() };
+  if (num("p_d")) b.diameter_mm = num("p_d");
+  const r = await call("/civil/hydraulics/pipe", "POST", b); return r.error ? fail(r) : pipeView(r.data);
+});
+$("btnChannel").onclick = () => run($("btnChannel"), $("o-channel"), async () => {
+  if (!needCriteria($("o-channel"))) return $("o-channel").innerHTML;
+  const r = await call("/civil/hydraulics/channel", "POST", { flow_m3s: num("c_q"), bottom_width_m: num("c_b"), side_slope: num("c_z"), slope: num("c_s"), n: num("c_n"), criteria: criteria() });
+  if (r.error) return fail(r); const d = r.data;
+  return kv([["Normal depth (m)", f(d.normal_depth_m, 3)], ["Critical depth (m)", f(d.critical_depth_m, 3)], ["Velocity (m/s)", f(d.velocity_ms, 2)], ["Froude number", f(d.froude, 2)], ["Flow regime", d.regime], ["Top width (m)", f(d.top_width_m, 2)]]) + findings(d.checks);
+});
+$("btnCulvert").onclick = () => run($("btnCulvert"), $("o-culvert"), async () => {
+  if (!needCriteria($("o-culvert"))) return $("o-culvert").innerHTML;
+  const r = await call("/civil/hydraulics/culvert", "POST", { flow_m3s: num("v_q"), clear_width_m: num("v_w"), clear_height_m: num("v_h"), length_m: num("v_l"), slope: num("v_s"), n: num("v_n"), barrels: num("v_b"), criteria: criteria() });
+  if (r.error) return fail(r);
+  const l = await call("/civil/loads/culvert", "POST", { clear_width_m: num("v_w"), clear_height_m: num("v_h"), wall_thickness_m: num("v_wt"), slab_thickness_m: num("v_st"), barrels: num("v_b"), cover_height_m: num("v_cov"), live_surcharge_kpa: num("v_live") });
+  const d = r.data, bar = d.barrel;
+  let html = "<h3>Hydraulics</h3>" + kv([["Barrel status", bar.status === "ok" ? "carries the flow" : "over capacity"], ["Full barrel capacity (m3/s)", f(bar.capacity_full_total_m3s, 3)],
+    ["Barrel depth (m)", bar.depth_m === null ? "-" : f(bar.depth_m, 3)], ["Barrel velocity (m/s)", bar.velocity_ms === null ? "-" : f(bar.velocity_ms, 2)],
+    ["Headwater (m)", f(d.inlet.headwater_m, 3)], ["HW / D", f(d.inlet.headwater_to_depth, 2)], ["Inlet regime", d.inlet.regime]]) + findings(d.checks) + notes(d.notes);
+  if (!l.error) { const x = l.data; html += "<h3 style='margin-top:16px'>Loads per metre of culvert</h3>" + kv([["Roof pressure (kPa)", f(x.roof_pressure_kpa, 1)], ["Lateral at roof level (kPa)", f(x.lateral_pressure_at_roof_level_kpa, 1)],
+    ["Lateral at floor level (kPa)", f(x.lateral_pressure_at_floor_level_kpa, 1)], ["Self weight (kN/m)", f(x.self_weight_kn_per_m, 1)], ["Total vertical (kN/m)", f(x.total_vertical_load_kn_per_m, 1)], ["Base pressure (kPa)", f(x.base_pressure_kpa, 1)]]) + notes(x.notes); }
+  return html;
+});
+
+// ---------- wall
+$("btnWall").onclick = () => run($("btnWall"), $("o-wall"), async () => {
+  if (!needCriteria($("o-wall"))) return $("o-wall").innerHTML;
+  const b = { stem_height_m: num("w_h"), stem_thickness_base_m: num("w_tb"), stem_thickness_top_m: num("w_tt"), base_width_m: num("w_bw"), base_thickness_m: num("w_bt"), toe_length_m: num("w_toe"),
+    backfill_unit_weight: num("w_g"), backfill_phi_deg: num("w_phi"), foundation_phi_deg: num("w_fphi"), surcharge_kpa: num("w_q"), criteria: criteria() };
+  if (num("w_ab") !== null) b.allowable_bearing_kpa = num("w_ab");
+  const r = await call("/civil/wall/stability", "POST", b); if (r.error) return fail(r); const d = r.data;
+  return kv([["Overturning factor of safety", f(d.factor_of_safety_overturning, 2)], ["Sliding factor of safety", f(d.factor_of_safety_sliding, 2)], ["Active thrust (kN/m)", f(d.earth_pressure.active_thrust_soil_kn_per_m + d.earth_pressure.active_thrust_surcharge_kn_per_m, 1)],
+    ["Vertical load (kN/m)", f(d.sum_vertical_kn_per_m, 1)], ["Resultant from toe (m)", f(d.resultant_from_toe_m, 2)], ["Eccentricity (m)", f(d.eccentricity_m, 2)], ["Max base pressure (kPa)", f(d.q_max_kpa, 1)], ["Min base pressure (kPa)", f(d.q_min_kpa, 1)], ["Base contact", d.contact]]) +
+    "<h3 style='margin-top:14px'>Loads about the toe</h3>" + table(["Item", "Force (kN/m)", "Lever arm (m)", "Moment (kNm/m)"], d.loads.map((x) => [x.name, f(x.force_kn_per_m, 1), f(x.lever_arm_m, 2), f(x.moment_about_toe_knm_per_m, 1)])) + findings(d.checks) + notes(d.notes);
+});
+
+// ---------- start
+(async function start() {
+  const s = Auth.getSession();
+  show(!!s);
+  if (!s) return;
+  const r = await call("/civil/criteria/default", "GET");
+  $("criteria").value = JSON.stringify(r.data ? r.data.criteria : {}, null, 2);
+})();
+</script>
+</body>
+</html>

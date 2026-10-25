@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Import &amp; edit · NitoCAD</title>
+<link rel="stylesheet" href="theme.css">
+<script src="theme.js"></script>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+  header{display:flex;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line)}
+  header a{color:var(--ink);text-decoration:none;font-weight:600}
+  main{max-width:1280px;margin:0 auto;padding:14px 12px 60px}
+  .note{color:var(--ink-soft);font-size:.85rem}
+  .drop{border:2px dashed var(--line);border-radius:12px;padding:22px 14px;text-align:center;background:var(--surface)}
+  .drop.over{border-color:var(--gold)}
+  .drop h1{font-size:1.15rem;margin:0 0 6px}
+  .btn{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 12px;cursor:pointer;min-height:38px}
+  .btn:hover{border-color:var(--ink-soft)} .btn:disabled{opacity:.5;cursor:default}
+  .btn.primary{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  .btn.on{outline:2px solid var(--gold)}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin:6px 0}
+  .fld{display:flex;flex-direction:column;gap:2px;font-size:.78rem;color:var(--ink-soft)}
+  .fld input,.fld select,.fld textarea{font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:7px;min-width:0;width:100%}
+  .fld input[type=number]{width:92px} .fld input[type=checkbox]{width:auto}
+  textarea.code{font:12px/1.4 ui-monospace,Menlo,monospace;min-height:260px;width:100%;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:8px}
+  #tabs{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 8px}
+  .tab{display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);cursor:pointer;max-width:240px}
+  .tab.active{border-color:var(--gold);background:var(--paper)} .tab span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .tab b{cursor:pointer;opacity:.6}
+  .ed{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:12px}
+  @media(max-width:860px){.ed{grid-template-columns:1fr}}
+  .stage{border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden;position:relative;min-height:340px}
+  .stage canvas{display:block;width:100%;height:62vh;min-height:340px}
+  .panel{border:1px solid var(--line);border-radius:10px;background:var(--surface);padding:10px;max-height:78vh;overflow:auto}
+  .panel h3{font-size:.85rem;margin:10px 0 4px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-soft)} .panel h3:first-child{margin-top:0}
+  .info{font-size:.85rem;color:var(--ink-soft);margin:4px 0}
+  .warn{color:#c0392b} .good{color:#2e9e5b}
+  .list{max-height:200px;overflow:auto;border:1px solid var(--line);border-radius:6px}
+  .list div{padding:4px 8px;display:flex;justify-content:space-between;gap:6px;border-bottom:1px solid var(--line);font-size:.85rem}
+  #toasts{position:fixed;left:12px;right:12px;bottom:12px;display:flex;flex-direction:column;gap:6px;z-index:50;pointer-events:none;align-items:center}
+  .toast{background:var(--ink);color:var(--paper);padding:9px 14px;border-radius:8px;max-width:640px;font-size:.9rem}
+  .toast.error{background:#c0392b;color:#fff}
+  .tree{font:12px/1.5 ui-monospace,Menlo,monospace} .tree details{margin-left:14px} .tree summary{cursor:pointer} .tree input{font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:4px;padding:1px 4px;width:min(320px,60vw)}
+  .thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+  .thumb{border:2px solid var(--line);border-radius:8px;padding:6px;background:var(--paper);text-align:center;cursor:pointer} .thumb.sel{border-color:var(--gold)} .thumb canvas{max-width:100%;height:auto}
+  .svgbox{background:#fff;overflow:auto;height:62vh} .svgbox svg{max-width:100%}
+  .scroll{overflow:auto;max-height:70vh}
+</style>
+</head>
+<body>
+<header><a href="index.html">NitoCAD</a><span class="note">Import &amp; edit</span></header>
+<main>
+  <section class="drop" id="drop">
+    <h1>Open a file</h1>
+    <input id="picker" type="file" multiple hidden>
+    <button class="btn primary" id="choose" type="button">Choose files</button>
+    <p class="note" style="margin:8px 0 2px">or drop them here. STEP, IGES, BREP · STL, OBJ · DXF, SVG · PDF · PNG, JPG, WEBP · KiCad · Gerber and drill files (or a zip of them)</p>
+    <p class="note" style="margin:2px 0 0">STL, OBJ, DXF, SVG, PDF, images, KiCad and Gerber are opened and edited in your browser and are <b>not uploaded</b>. STEP, IGES and BREP are sent to the server to be converted and are not stored.</p>
+  </section>
+  <div id="tabs"></div>
+  <div id="work"></div>
+</main>
+<div id="toasts"></div>
+<script type="module" src="import/app.js"></script>
+</body>
+</html>

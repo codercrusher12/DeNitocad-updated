@@ -19,15 +19,17 @@ html[data-theme="dark"] .theme-toggle .i-moon{display:none;}
 
 html[data-theme="dark"]{
   color-scheme:dark;
-  --ink:#E8EDF5;
-  --ink-soft:#9DB0C8;
-  --paper:#0A111C;
-  --fog:#101B2B;
-  --line:#22324A;
-  --orange-deep:#FF8F5E;
+  --ink:#ECECEA;
+  --ink-soft:#A2A2A8;
+  --paper:#000000;
+  --fog:#08080F;
+  --line:#1F1F2E;
+  --orange:#262626;
+  --dot:#F26A2E;
+  --orange-deep:#D6D6DA;
   --gold:#D9B65F;
-  --surface:#111C2E;
-  --deep:#0F2038;
+  --surface:#0B0B12;
+  --deep:#0A0A18;
   --botchain-bright-deep:#3FD6A8;
 }
 
@@ -49,8 +51,8 @@ html[data-theme="dark"] .wp-note,
 html[data-theme="dark"] .wp-toc,
 html[data-theme="dark"] .prov-pill{background:var(--surface);}
 html[data-theme="dark"] .demo-bar{background:var(--fog);}
-html[data-theme="dark"] .demo-warn{background:rgba(240,101,43,.12);}
-html[data-theme="dark"] header{background:rgba(10,17,28,.88);}
+html[data-theme="dark"] .demo-warn{background:rgba(120,120,125,.12);}
+html[data-theme="dark"] header{background:rgba(0,0,0,.85);}
 
 /* form controls */
 html[data-theme="dark"] input,
@@ -58,7 +60,7 @@ html[data-theme="dark"] textarea,
 html[data-theme="dark"] select,
 html[data-theme="dark"] .demo-cfg button,
 html[data-theme="dark"] .demo-examples button{background:var(--surface);color:var(--ink);border-color:var(--line);}
-html[data-theme="dark"] ::placeholder{color:#6F83A0;}
+html[data-theme="dark"] ::placeholder{color:#888888;}
 
 /* hardcoded body text colors */
 html[data-theme="dark"] .legal p,
@@ -68,26 +70,26 @@ html[data-theme="dark"] .wp-article p,
 html[data-theme="dark"] .wp-article li,
 html[data-theme="dark"] .wp-article dd,
 html[data-theme="dark"] .wp-table th,
-html[data-theme="dark"] .wp-table td{color:#C3CFDE;}
+html[data-theme="dark"] .wp-table td{color:#D0D0D0;}
 html[data-theme="dark"] .wp-table thead th{color:var(--ink);}
 html[data-theme="dark"] .wp-rule{color:var(--ink) !important;}
 html[data-theme="dark"] .draft{background:#2A2312;border-color:#5C4C1E;color:#E6CF8A;}
 html[data-theme="dark"] .part-more{color:var(--ink-soft);}
-html[data-theme="dark"] .parts button{color:var(--ink);border-color:#5C7090;}
+html[data-theme="dark"] .parts button{color:var(--ink);border-color:#4A4A4A;}
 
 /* var(--ink) was used as a dark panel color, so pin those panels */
 html[data-theme="dark"] .audience,
 html[data-theme="dark"] .pricing{background:var(--deep);}
-html[data-theme="dark"] .rig{background:#12294A;}
-html[data-theme="dark"] .svc.core{background:var(--deep);border-color:#2C4A75;}
+html[data-theme="dark"] .rig{background:#161616;}
+html[data-theme="dark"] .svc.core{background:var(--deep);border-color:#2A2A2A;}
 html[data-theme="dark"] .chat-bubble.user,
-html[data-theme="dark"] .wp-steps>li::before{background:#1E3F6E;color:#fff;}
+html[data-theme="dark"] .wp-steps>li::before{background:#262626;color:#fff;}
 html[data-theme="dark"] .btn-ghost:hover,
-html[data-theme="dark"] .wp-btn-ghost:hover{background:var(--ink);border-color:var(--ink);color:#0A111C;}
+html[data-theme="dark"] .wp-btn-ghost:hover{background:var(--ink);border-color:var(--ink);color:#000000;}
 html[data-theme="dark"] .wp-timeline>li::before{background:var(--paper);}
 
 /* the 3D viewport keeps its light scene so models stay readable */
-html[data-theme="dark"] .demo-viewer{background:#EDF2F4;}
+html[data-theme="dark"] .demo-viewer{background:#F0F0EE;}
 
 /* nav logo mark is dark line art */
 html[data-theme="dark"] .logo-icon{filter:invert(1) hue-rotate(180deg) brightness(1.15);}
@@ -97,12 +99,75 @@ html[data-theme="dark"] .spec,
 html[data-theme="dark"] .demo-shell,
 html[data-theme="dark"] .rig{box-shadow:none;}
 
-html[data-theme="dark"] .wp-hero{background:linear-gradient(180deg,#0F1B2D 0%,var(--paper) 100%);}
+html[data-theme="dark"] .wp-hero{background:linear-gradient(180deg,#0A0A0A 0%,var(--paper) 100%);}
 html[data-theme="dark"] .wp-btn-ghost{color:var(--ink);border-color:var(--ink);}
 
 /* white paper status tags */
 html[data-theme="dark"] .tag-fresh{background:rgba(63,214,168,.12);color:#5FE0B8;border-color:rgba(63,214,168,.35);}
-html[data-theme="dark"] .tag-ok{background:rgba(110,160,240,.14);color:#9CC0FA;border-color:rgba(110,160,240,.4);}
+html[data-theme="dark"] .tag-ok{background:rgba(175,175,175,.14);color:#CBCBCB;border-color:rgba(175,175,175,.4);}
 html[data-theme="dark"] .tag-stale{background:rgba(230,170,60,.14);color:#F0C36B;border-color:rgba(230,170,60,.4);}
-html[data-theme="dark"] .tag-unk{background:rgba(157,176,200,.12);color:#B6C4D8;border-color:rgba(157,176,200,.35);}
+html[data-theme="dark"] .tag-unk{background:rgba(178,178,178,.12);color:#C7C7C7;border-color:rgba(178,178,178,.35);}
 html[data-theme="dark"] .tag-miss{background:rgba(240,100,85,.14);color:#FF9A8C;border-color:rgba(240,100,85,.4);}
+
+/* dark only: no theme switch */
+.theme-toggle,.theme-slot .theme-toggle{display:none !important;}
+
+/* ---------- navy-black tint and soft glow (Mobi style) ---------- */
+html[data-theme="dark"]{
+  --glow-purple:rgba(154,92,170,.55);
+  --glow-pink:rgba(226,105,130,.42);
+  --glow-blue:rgba(84,120,200,.50);
+}
+
+/* dark feature panels: navy-black with a purple, pink and blue glow in the lower right */
+html[data-theme="dark"] .audience,
+html[data-theme="dark"] .pricing,
+html[data-theme="dark"] .svc.core{
+  background-color:#0A0A18;
+  background-image:
+    radial-gradient(60% 70% at 88% 108%,var(--glow-blue) 0%,transparent 62%),
+    radial-gradient(55% 65% at 100% 62%,var(--glow-pink) 0%,transparent 66%),
+    radial-gradient(60% 70% at 78% 78%,var(--glow-purple) 0%,transparent 70%);
+  background-repeat:no-repeat;
+}
+html[data-theme="dark"] .svc.core{border-color:#26263A;}
+
+/* hero: faint colour bloom behind the content */
+html[data-theme="dark"] .hero-v2{
+  background-image:
+    radial-gradient(46% 62% at 88% 8%,rgba(126,92,200,.30) 0%,transparent 70%),
+    radial-gradient(40% 55% at 10% 0%,rgba(70,110,200,.20) 0%,transparent 70%),
+    radial-gradient(38% 50% at 70% 100%,rgba(226,105,130,.16) 0%,transparent 70%);
+  background-repeat:no-repeat;
+}
+
+/* cards: navy-black surface with a soft top-right glow */
+html[data-theme="dark"] .spec,
+html[data-theme="dark"] .demo-shell,
+html[data-theme="dark"] .pv-card,
+html[data-theme="dark"] .step,
+html[data-theme="dark"] .job-card,
+html[data-theme="dark"] .price-peek,
+html[data-theme="dark"] .wp-card{
+  background-color:#0B0B14;
+  background-image:radial-gradient(70% 90% at 100% 0%,rgba(138,96,190,.16) 0%,rgba(226,105,130,.07) 45%,transparent 72%);
+  background-repeat:no-repeat;
+  border-color:#222234;
+}
+
+/* whitepaper hero */
+html[data-theme="dark"] .wp-hero{
+  background:
+    radial-gradient(50% 80% at 85% 0%,rgba(126,92,200,.30) 0%,transparent 70%),
+    radial-gradient(40% 70% at 12% 10%,rgba(70,110,200,.18) 0%,transparent 70%),
+    #000;
+}
+
+/* inputs and chips pick up the navy tint */
+html[data-theme="dark"] input,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select{background:#0B0B14;border-color:#26263A;}
+html[data-theme="dark"] header{background:rgba(4,4,12,.82);}
+html[data-theme="dark"] .rig{background:#12121E;}
+
+html[data-theme="dark"] .hero-status li{background:var(--surface);}

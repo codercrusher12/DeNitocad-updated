@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aerospace check · NitoCAD</title>
+<link rel="stylesheet" href="theme.css">
+<script src="theme.js"></script>
+<style>
+  body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+  main{max-width:880px;margin:0 auto;padding:24px 16px 80px}
+  h1{font-size:1.5rem;margin:.2em 0}
+  h2{font-size:1.05rem;margin:1.6em 0 .5em}
+  .note{color:var(--ink-soft);font-size:.9rem}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;margin:12px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+  label{display:block;font-size:.8rem;color:var(--ink-soft)}
+  input,select,textarea,button{font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:8px;width:100%;box-sizing:border-box}
+  textarea{min-height:260px;font:13px/1.4 ui-monospace,Menlo,monospace}
+  button{width:auto;cursor:pointer;background:var(--ink);color:var(--paper);border:0;padding:10px 16px}
+  button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+  .tabs{display:flex;gap:8px}
+  .badge{display:inline-block;padding:4px 10px;border-radius:99px;font-weight:600;font-size:.85rem;border:1px solid var(--line)}
+  .ok{border-color:#2e9e5b;color:#2e9e5b}.warn{border-color:var(--gold);color:var(--gold)}.bad{border-color:#d64545;color:#d64545}
+  ul{padding-left:1.2em;margin:.4em 0}
+  details{margin:.4em 0}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <h1>Aerospace check</h1>
+  <p class="note">Screening results with explicit blockers. The strongest status is “ready for engineering review”, which is not certification or flight approval. Missing inputs are never filled in for you.</p>
+  <div id="signin" class="card" hidden>Sign in with your wallet on the <a href="index.html">main page</a>, then come back here.</div>
+
+  <div class="tabs"><button id="tabPart">Part</button><button id="tabAsm" class="ghost">Assembly (JSON)</button></div>
+
+  <section id="partForm">
+    <h2>Part</h2>
+    <div class="card grid">
+      <div><label>Design ID<input id="designId" value="my-design-1"></label></div>
+      <div><label>Part type<select id="partType"></select></label></div>
+    </div>
+    <div class="card"><div class="grid" id="params"></div>
+      <div class="grid" style="margin-top:10px"><div><label>CAD volume mm³ (optional, for mass)<input id="volume" type="number" step="any"></label></div></div></div>
+
+    <h2>Material</h2>
+    <div class="card">
+      <label>Material<select id="matSel"></select></label>
+      <p class="note" id="matNote"></p>
+      <div id="custom" class="grid" hidden>
+        <div><label>ID<input id="m_id"></label></div>
+        <div><label>Density g/cc<input id="m_density" type="number" step="any"></label></div>
+        <div><label>E (MPa)<input id="m_e" type="number" step="any"></label></div>
+        <div><label>Ftu (MPa)<input id="m_ftu" type="number" step="any"></label></div>
+        <div><label>Fty (MPa)<input id="m_fty" type="number" step="any"></label></div>
+        <div><label>Fsu (MPa)<input id="m_fsu" type="number" step="any"></label></div>
+        <div><label>Fbru (MPa)<input id="m_fbru" type="number" step="any"></label></div>
+        <div><label>Basis<select id="m_basis"><option>B</option><option>A</option><option>S</option><option value="user_certified">user_certified</option><option value="typical">typical</option></select></label></div>
+        <div><label>Galvanic group<select id="m_gal"><option value="">unknown</option><option>aluminium</option><option>titanium</option><option>carbon_steel</option><option>stainless_steel</option><option>cfrp</option><option>magnesium</option></select></label></div>
+        <div style="grid-column:1/-1"><label>Source (table, document, revision) – required<input id="m_source" placeholder="e.g. MMPDS table number, thickness range, grain direction"></label></div>
+      </div>
+    </div>
+
+    <div id="extraWrap" class="card" hidden>
+      <label>Engine cycle (with off-design sweep and mean-line inputs), flight, weights and mass components (JSON). Every value needs a state and a source; draft values block release.
+        <textarea id="extra" spellcheck="false" style="min-height:200px"></textarea></label>
+    </div>
+
+    <h2>Factor of safety and load</h2>
+    <div class="card">
+      <p class="note">Each value needs a source and a state. Draft or assumed values block release.</p>
+      <div class="grid">
+        <div><label>Ultimate factor<input id="fs_v" type="number" step="any"></label></div>
+        <div><label>State<select id="fs_s"></select></label></div>
+        <div style="grid-column:span 2"><label>Source<input id="fs_src"></label></div>
+      </div>
+      <div id="loadBlock" class="grid" style="margin-top:10px">
+        <div><label id="load_l">Limit load (N)</label><input id="ld_v" type="number" step="any"></div>
+        <div><label>State<select id="ld_s"></select></label></div>
+        <div style="grid-column:span 2"><label>Source<input id="ld_src"></label></div>
+        <div id="distWrap"><label>Lift distribution<select id="ld_dist"><option>elliptic</option><option>uniform</option></select></label></div>
+      </div>
+    </div>
+
+    <h2>External evidence (FEA / test)</h2>
+    <div class="card">
+      <p class="note">Hand calculations are screening only. Manual evidence needs the tool or lab, its version, a report reference and a named reviewer. For evidence NitoCAD can check itself (FEA convergence and equilibrium, test measurements against criteria) add a structured entry under "evidence" in the JSON box above.</p>
+      <div class="grid">
+        <div><label>Evidence ID<input id="ev_id" placeholder="e.g. FEA-001"></label></div>
+        <div><label>Kind<select id="ev_kind"><option>fea</option><option>test</option><option>inspection</option></select></label></div>
+        <div><label>Result<select id="ev_res"><option>pass</option><option>fail</option></select></label></div>
+        <div><label>Revision it applies to<input id="ev_rev" placeholder="filled from the last check"></label></div>
+        <div><label>Tool or lab<input id="ev_tool"></label></div>
+        <div><label>Tool version<input id="ev_ver"></label></div>
+        <div><label>Report reference<input id="ev_ref"></label></div>
+        <div><label>Reviewed by<input id="ev_by"></label></div>
+      </div>
+    </div>
+    <p><button id="run">Run check</button> <button id="dl" class="ghost">Download spec JSON</button></p>
+  </section>
+
+  <section id="asmForm" hidden>
+    <h2>Assembly</h2>
+    <p class="note">Paste an assembly spec: parts (each a part spec), interfaces (feature data, fastener, limit load, joint rules with a cited source) and factors. Interface features are entered by you, not read from CAD.</p>
+    <textarea id="asmJson" spellcheck="false"></textarea>
+    <p><button id="runAsm">Check assembly</button></p>
+  </section>
+
+  <h2 id="outH" hidden>Result</h2>
+  <div id="out"></div>
+</main>
+<script>
+(function(){
+  const DEFAULT_API_BASE = "https://nitocad-production-2df5.up.railway.app";
+  const base = localStorage.getItem('nitocad_api_base') || DEFAULT_API_BASE;
+  function session(){
+    try{ const s = JSON.parse(localStorage.getItem('nitocad_wallet_session_' + base) || 'null');
+      return s && new Date(s.expires_at) > new Date() ? s : null; }catch(e){ return null; }
+  }
+  const $ = id => document.getElementById(id);
+  const STATES = ['draft','assumed','confirmed','verified'];
+  ['fs_s','ld_s'].forEach(id => STATES.forEach(s => { const o = document.createElement('option'); o.value = o.textContent = s; $(id).appendChild(o); }));
+
+  const PARTS = {
+    airfoil_wing: {load:['wing_limit_lift','Semi-span limit lift (N)'], p:{naca:'2412',root_chord_mm:200,tip_chord_mm:120,span_mm:600,sweep_deg:0}},
+    wing_rib: {load:null, p:{naca:'2412',chord_mm:200,thickness_mm:2,lightening_hole_count:3}},
+    fuselage_frame: {load:['frame_diametral','Limit diametral load (N)'], p:{outer_diameter_mm:300,ring_width_mm:30,thickness_mm:2,lightening_hole_count:8,lightening_hole_diameter_mm:15}},
+    wing_spar: {load:['spar_tip_load','Limit tip load (N)'], p:{length_mm:600,height_mm:40,flange_width_mm:30,flange_thickness_mm:3,web_thickness_mm:2}},
+    attachment_lug: {load:['lug_axial','Limit axial load (N)'], p:{width_mm:30,length_mm:50,thickness_mm:6,hole_diameter_mm:10}},
+    fuselage: {oml:true, load:null, p:{length_mm:30000,diameter_mm:3500,nose_ratio:0.12,tail_ratio:0.25,tail_end_diameter_mm:500}},
+    tail_surface: {oml:true, load:null, p:{orientation:'horizontal',naca:'0012',root_chord_mm:4000,tip_chord_mm:2000,span_mm:6000,sweep_deg:30}},
+    turbofan_engine: {oml:true, load:null, p:{fan_diameter_mm:1500,hub_ratio:0.3,core_ratio:0.45,fan_blades:18,compressor_stages:0,turbine_stages:0,blades_per_row:30},
+      extra:{cycle:{state:'draft',source:'',altitude_m:0,mach:0,mdot0_kg_s:320,bpr:5,pi_f:1.6,pi_c:19,tt4_k:1600,pi_inlet:0.98,eta_f:0.9,eta_c:0.88,eta_b:0.99,pi_b:0.95,eta_t:0.9,eta_mech:0.99,pi_nozzle:0.99,
+        offdesign:{altitudes_m:[0,5000,10668],machs:[0,0.4,0.8],tt4_k:[1300,1500,1650],tt3_max_k:900,tt4_max_k:1700},
+        meanline:{fan_axial_mach:0.6,fan_hub_tip:0.3,fan_tip_speed_m_s:450,fan_psi_max:0.4,hpc_axial_mach:0.5,hpc_mean_speed_m_s:320,hpc_psi_max:0.35,hpt_mean_speed_m_s:380,hpt_psi_max:1.6,lpt_mean_speed_m_s:300,lpt_psi_max:2.0,turbine_exit_mach:0.45}},
+        mass_components:[{name:'engine',thrust_n:110000,thrust_to_weight:5.5,state:'draft',source:''}]}},
+    jet_aircraft: {oml:true, load:null, p:{fuselage_length_mm:37000,fuselage_diameter_mm:3950,wing_span_mm:34000,wing_root_chord_mm:6000,wing_tip_chord_mm:1800,wing_sweep_deg:25,airfoil_kappa:0.95,engines:2,engine_fan_diameter_mm:1800},
+      extra:{cycle:{state:'draft',source:'',altitude_m:0,mach:0,mdot0_kg_s:320,bpr:5,pi_f:1.6,pi_c:19,tt4_k:1600,pi_inlet:0.98,eta_f:0.9,eta_c:0.88,eta_b:0.99,pi_b:0.95,eta_t:0.9,eta_mech:0.99,pi_nozzle:0.99},
+        flight:{state:'draft',source:'',tt4_max_k:1650,max_corrected_flow_ratio:1.0,cruise:{altitude_m:10668,mach:0.78,start_mass_kg:70000,end_mass_kg:58000},climb:{altitude_m:10668,mach:0.78,mass_kg:68000}},
+        weights:{mtow_kg:{value:70000,state:'draft',source:''},static_thrust_total_n:{value:220000,state:'draft',source:''}},
+        stability:{state:'draft',source:'',eta_tail:0.95,fuselage_nacelle_forward_shift_mac:0.10,sm_min:0.05,sm_max:0.30,tail_cl_limit:0.9,
+          cases:[{name:'forward CG',mass_kg:70000,cg_percent_mac:20,altitude_m:10668,mach:0.78},{name:'nominal',mass_kg:64000,cg_percent_mac:'rollup',altitude_m:10668,mach:0.78},{name:'aft CG',mass_kg:58000,cg_percent_mac:34,altitude_m:10668,mach:0.78}]},
+        highlift:{state:'draft',source:'',cl_max_airfoil:1.6,delta_cd0_gear:0.015,delta_cd0_engine_out:0.004,
+          takeoff:{flap:{type:'slotted',chord_ratio:0.28,flapped_area_ratio:0.6,deflection_deg:15},slat:{type:'slat',area_ratio:0.7,extended_chord_ratio:1.1}},
+          landing:{flap:{type:'fowler',chord_ratio:0.3,flapped_area_ratio:0.6,deflection_deg:40,extended_chord_ratio:1.25},slat:{type:'slat',area_ratio:0.7,extended_chord_ratio:1.1}}},
+        field:{state:'draft',source:'',altitude_m:0,tt4_max_k:1650,takeoff_mass_kg:70000,landing_mass_kg:60000,cl_ground_roll:0.2,mu_roll:0.02,mu_brake:0.4,rotation_time_s:3,
+          vmcg_m_s:50,reaction_time_s:2,mu_brake_wet:0.2,tire_pressure_kpa:1400},
+        dynamics:{state:'draft',source:'',eta_tail:0.95,fuselage_nacelle_forward_shift_mac:0.10,cn_beta_fuselage:-0.07,cl_beta:-0.10,
+          inertia:{ix:1200000,iy:3000000,iz:4000000,ixz:0},
+          criteria:{phugoid_zeta_min:0.04,short_period_zeta_min:0.3,short_period_zeta_max:2.0,dutch_roll_zeta_min:0.08,dutch_roll_wn_zeta_min:0.15,dutch_roll_wn_min:0.4,roll_tau_max_s:1.4,spiral_t2_min_s:20},
+          cases:[{name:'cruise',mass_kg:64000,cg_percent_mac:24,altitude_m:10668,mach:0.78}]},
+        elevator:{state:'draft',source:'',chord_ratio:0.3,span_fraction:0.9,max_up_deg:25,max_down_deg:15,viscous_factor:0.85,stabilizer_incidence_deg:-1,eta_tail:0.95,fuselage_nacelle_forward_shift_mac:0.10,rotation_accel_min_deg_s2:3,
+          cases:[{name:'fwd',mass_kg:70000,cg_percent_mac:20,altitude_m:10668,mach:0.78},{name:'aft',mass_kg:58000,cg_percent_mac:34,altitude_m:10668,mach:0.78}]},
+        certification:{authorized_signers:{engineering_reviewer:[],certification_lead:[],authority_liaison:[]},compliance_items:[]},
+        mass_components:[{name:'airframe',value:38000,state:'draft',source:'',x_mm:18200},{name:'engines',thrust_n:220000,thrust_to_weight:5.5,state:'draft',source:'',x_mm:13500},{name:'payload and fuel',value:20000,state:'draft',source:'',x_mm:19500}]}}
+  };
+  Object.keys(PARTS).forEach(k => { const o = document.createElement('option'); o.value = o.textContent = k; $('partType').appendChild(o); });
+
+  function drawParams(){
+    const def = PARTS[$('partType').value];
+    const box = $('params'); box.textContent = '';
+    Object.entries(def.p).forEach(([k,v]) => {
+      const d = document.createElement('div'), l = document.createElement('label'), i = document.createElement('input');
+      l.textContent = k; i.id = 'p_' + k; i.value = v; i.dataset.key = k; if (typeof v === 'number') { i.type = 'number'; i.step = 'any'; }
+      l.appendChild(i); d.appendChild(l); box.appendChild(d);
+    });
+    $('loadBlock').hidden = !def.load;
+    $('extraWrap').hidden = !def.extra;
+    $('extra').value = def.extra ? JSON.stringify(def.extra, null, 2) : '';
+    const none = $('matSel').querySelector('option[value="__none"]');
+    if (none) { none.hidden = !def.oml; if (def.oml) $('matSel').value = '__none'; else if ($('matSel').value === '__none') $('matSel').selectedIndex = 0; matChanged(); }
+    if (def.load) $('load_l').textContent = def.load[1];
+    $('distWrap').hidden = $('partType').value !== 'airfoil_wing';
+  }
+  $('partType').onchange = drawParams; drawParams();
+
+  fetch(base + '/api/aero/materials').then(r => r.json()).then(list => {
+    list.forEach(m => { const o = document.createElement('option'); o.value = m.id; o.textContent = m.id + ' (typical values, not design allowables)'; $('matSel').appendChild(o); });
+    const nn = document.createElement('option'); nn.value = '__none'; nn.textContent = 'None (concept geometry only)'; nn.hidden = true; $('matSel').insertBefore(nn, $('matSel').firstChild);
+    const c = document.createElement('option'); c.value = '__custom'; c.textContent = 'Custom material (with design allowables)…'; $('matSel').appendChild(c);
+    matChanged();
+  }).catch(() => { $('matNote').textContent = 'Could not load the material list from the server.'; });
+  function matChanged(){
+    const custom = $('matSel').value === '__custom';
+    if ($('matSel').value === '__none') { $('custom').hidden = true; $('matNote').textContent = 'Concept (outer-mold-line) geometry: mass must be declared with a source instead of computed.'; return; }
+    $('custom').hidden = !custom;
+    $('matNote').textContent = custom ? 'Enter values from MMPDS, CMH-17 or a controlled supplier/company specification and cite the source.'
+      : 'Built-in values are typical only. Checks will run, but release stays blocked until you use a design-basis material.';
+  }
+  $('matSel').onchange = matChanged;
+
+  const num = id => { const v = $(id).value.trim(); return v === '' ? undefined : Number(v); };
+  function sourced(v, s, src){ const x = num(v); return x === undefined ? undefined : {value: x, state: $(s).value, source: $(src).value.trim()}; }
+  let lastRev = '';
+
+  function buildSpec(){
+    const type = $('partType').value, def = PARTS[type];
+    const params = {};
+    $('params').querySelectorAll('input').forEach(i => { if (i.value !== '') params[i.dataset.key] = i.type === 'number' ? Number(i.value) : i.value; });
+    let material;
+    if ($('matSel').value === '__custom'){
+      material = {id: $('m_id').value.trim(), density_g_cc: num('m_density'), e_mpa: num('m_e'), ftu_mpa: num('m_ftu'), fty_mpa: num('m_fty'),
+        fsu_mpa: num('m_fsu'), fbru_mpa: num('m_fbru'), basis: $('m_basis').value, source: $('m_source').value.trim(), galvanic_group: $('m_gal').value || undefined};
+      Object.keys(material).forEach(k => material[k] === undefined && delete material[k]);
+    } else if ($('matSel').value === '__none') material = undefined;
+    else material = {id: $('matSel').value};
+    const spec = {design_id: $('designId').value.trim() || 'unnamed', part_type: type, params, factors: {}, loads: {}};
+    if (material) spec.material = material;
+    if (def.extra && $('extra').value.trim()) { try { Object.assign(spec, JSON.parse($('extra').value)); } catch(e) { throw new Error('The cycle/weights box is not valid JSON.'); } }
+    const fs = sourced('fs_v','fs_s','fs_src'); if (fs) spec.factors.ultimate = fs;
+    if (def.load){ const ld = sourced('ld_v','ld_s','ld_src'); if (ld){ if (type === 'airfoil_wing') ld.distribution = $('ld_dist').value; spec.loads[def.load[0]] = ld; } }
+    if (num('volume') !== undefined) spec.geometry = {volume_mm3: num('volume')};
+    if ($('ev_id').value.trim()) spec.evidence = [{id: $('ev_id').value.trim(), kind: $('ev_kind').value, result: $('ev_res').value, revision_id: $('ev_rev').value.trim() || lastRev, tool: $('ev_tool').value.trim(), tool_version: $('ev_ver').value.trim(), report_ref: $('ev_ref').value.trim(), reviewer: $('ev_by').value.trim()}];
+    return spec;
+  }
+
+  function el(tag, text, cls){ const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; }
+  function list(items){ const u = el('ul'); items.forEach(t => u.appendChild(el('li', t))); return u; }
+  const LABEL = {ready_for_engineering_review:['Ready for engineering review','ok'], analysis_incomplete:['Analysis incomplete','warn'], analysis_failed:['Analysis failed','bad'], geometry_only:['Geometry only','warn']};
+
+  function render(r){
+    const out = $('out'); out.textContent = ''; $('outH').hidden = false;
+    const [t, c] = LABEL[r.status] || [r.status, 'warn'];
+    const head = el('div', undefined, 'card');
+    head.appendChild(el('span', t, 'badge ' + c));
+    head.appendChild(el('p', r.notice, 'note'));
+    head.appendChild(el('p', 'Revision: ' + r.revision_id.slice(0, 16) + '…', 'note'));
+    out.appendChild(head);
+    if (r.revision_id){ lastRev = r.revision_id; $('ev_rev').placeholder = lastRev.slice(0, 16) + '…'; }
+    if (r.blockers.length){ const c1 = el('div', undefined, 'card'); c1.appendChild(el('strong', 'Blocking release')); c1.appendChild(list(r.blockers)); out.appendChild(c1); }
+    if (r.gaps.length){ const c2 = el('div', undefined, 'card'); c2.appendChild(el('strong', 'Missing inputs')); c2.appendChild(list(r.gaps)); out.appendChild(c2); }
+    (r.results || []).forEach(a => {
+      const d = el('details'); d.open = true;
+      d.appendChild(el('summary', a.method + ': ' + a.summary));
+      if (a.warnings && a.warnings.length) d.appendChild(list(a.warnings));
+      d.appendChild(list(Object.entries(a.outputs).map(([k, v]) => {
+        if (Array.isArray(v)) return k + ': ' + v.length + ' item(s)' + (v.length ? ' e.g. ' + JSON.stringify(v[0]) : '');
+        if (v && typeof v === 'object') return k + ' = ' + JSON.stringify(v);
+        return k + ' = ' + v; })));
+      if (a.assumptions.length){ d.appendChild(el('strong', 'Assumptions')); d.appendChild(list(a.assumptions)); }
+      if (a.limits.length){ d.appendChild(el('strong', 'Valid only if')); d.appendChild(list(a.limits)); }
+      const card = el('div', undefined, 'card'); card.appendChild(d); out.appendChild(card);
+    });
+    if (r.parts){ const cp = el('div', undefined, 'card'); cp.appendChild(el('strong', 'Parts'));
+      cp.appendChild(list(Object.entries(r.parts).map(([k, v]) => k + ': ' + v.status))); out.appendChild(cp); }
+    (r.interfaces || []).forEach(i => { const ci = el('div', undefined, 'card'); ci.appendChild(el('strong', 'Interface ' + i.id + ': ' + i.status + (i.ms_min != null ? ' (min margin ' + i.ms_min + ')' : ''))); out.appendChild(ci); });
+    if (r.outputs && r.outputs.mass_kg !== undefined) out.appendChild(el('p', 'Assembly mass: ' + r.outputs.mass_kg + ' kg', 'note'));
+    out.scrollIntoView({behavior: 'smooth'});
+  }
+
+  async function post(path, body){
+    const s = session();
+    if (!s){ $('signin').hidden = false; return; }
+    const res = await fetch(base + path, {method: 'POST', headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + s.session_id}, body: JSON.stringify(body)});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok){ const out = $('out'); out.textContent = ''; $('outH').hidden = false; out.appendChild(el('div', typeof data.detail === 'string' ? data.detail : 'Request failed (' + res.status + ')', 'card bad')); return; }
+    render(data);
+  }
+  $('run').onclick = () => { let spec; try { spec = buildSpec(); } catch(e) { alert(e.message); return; } post('/api/aero/assess', spec).catch(e => alert('Network error: ' + e.message)); };
+  $('runAsm').onclick = () => { let spec; try { spec = JSON.parse($('asmJson').value); } catch(e){ alert('That is not valid JSON.'); return; } post('/api/aero/assembly/assess', spec).catch(e => alert('Network error: ' + e.message)); };
+  $('dl').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(buildSpec(), null, 2)], {type: 'application/json'})); a.download = ($('designId').value || 'design') + '.json'; a.click(); };
+
+  function tab(asm){ $('partForm').hidden = asm; $('asmForm').hidden = !asm; $('tabAsm').className = asm ? '' : 'ghost'; $('tabPart').className = asm ? 'ghost' : ''; }
+  $('tabPart').onclick = () => tab(false); $('tabAsm').onclick = () => tab(true);
+  $('asmJson').value = JSON.stringify({design_id: 'asm-1', factors: {ultimate: {value: 1.5, state: 'draft', source: ''}},
+    parts: {lug: {part_type: 'attachment_lug', params: PARTS.attachment_lug.p, material: {id: '6061-T6'}},
+            frame: {part_type: 'fuselage_frame', params: PARTS.fuselage_frame.p, material: {id: '6061-T6'}}},
+    interfaces: [{id: 'I1', a: {part: 'lug', hole_diameter_mm: 10, thickness_mm: 6, edge_distance_mm: 15}, b: {part: 'frame', hole_diameter_mm: 10, thickness_mm: 2, edge_distance_mm: 15},
+      fastener: {diameter_mm: 9.9, count: 1, shear_planes: 2, galvanic_group: 'aluminium', shear_allowable_n: {value: 0, state: 'draft', source: ''}},
+      limit_load: {value: 0, state: 'draft', source: ''}, rules: {min_edge_ratio: 0, max_clearance_mm: 0, source: ''}}]}, null, 2);
+  if (!session()) $('signin').hidden = false;
+})();
+</script>
+</body>
+</html>

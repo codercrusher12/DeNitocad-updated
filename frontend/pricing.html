@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pricing | NitoCAD</title>
+<meta name="description" content="NitoCAD pricing: buy credits in native BOT and spend one per generation. Every export format is included.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,700;1,9..144,500&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{--ink:#1C1C1E;--ink-soft:#5E5E63;--orange:#1C1C1E;--dot:#E8601C;--orange-deep:#0E0E10;--gold:#C9A24B;--paper:#FAFAF8;--fog:#F0F0EE;--line:#E3E3E0;--radius:14px;--botchain-bright:#13A57D;}
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:'IBM Plex Sans',sans-serif;-webkit-font-smoothing:antialiased;}
+  a{color:var(--orange-deep);}
+  h1,h2,h3{font-family:'Fraunces',serif;color:var(--ink);font-weight:500;margin:0;}
+  h1,h2,h3{font-weight:700;}
+  main .lead,.note{font-weight:600;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 32px;}
+  :focus-visible{outline:2px solid var(--orange-deep);outline-offset:3px;}
+  .sp-head{border-bottom:1px solid var(--line);}
+  .sp-head .wrap{display:flex;align-items:center;justify-content:space-between;height:72px;}
+  .logo{font-family:'Fraunces',serif;font-style:italic;font-weight:500;font-size:1.5rem;text-decoration:none;color:var(--ink);}
+  .logo span{color:var(--dot);}
+  .sp-nav{display:flex;gap:26px;align-items:center;}
+  .sp-nav a{text-decoration:none;color:var(--ink-soft);font-size:.92rem;font-weight:500;}
+  .sp-nav a:hover,.sp-nav a[aria-current="page"]{color:var(--ink);}
+  .btn{display:inline-flex;align-items:center;padding:12px 22px;border-radius:999px;font-weight:600;font-size:.92rem;text-decoration:none;border:1.5px solid transparent;transition:background .15s ease,color .15s ease;}
+  .btn-primary{background:var(--orange);color:#fff;}
+  .btn-primary:hover{background:var(--orange-deep);}
+  .btn-ghost{background:transparent;color:var(--ink);border-color:var(--ink);}
+  .btn-ghost:hover{background:var(--ink);color:#fff;}
+  main{padding:64px 0 88px;}
+  main h1{font-size:2.6rem;line-height:1.12;margin-bottom:14px;}
+  main .lead{color:var(--ink-soft);font-size:1.08rem;line-height:1.65;max-width:58ch;margin:0 0 44px;}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;}
+  .card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:28px;display:flex;flex-direction:column;gap:12px;}
+  .card.best{border-color:var(--botchain-bright);box-shadow:0 0 0 1px var(--botchain-bright);}
+  .card h3{font-size:1.3rem;}
+  .amount b{font-family:'Fraunces',serif;font-size:2rem;font-weight:500;}
+  .amount span{color:var(--ink-soft);font-size:.9rem;margin-left:6px;}
+  .card p{margin:0;color:var(--ink-soft);line-height:1.6;font-size:.96rem;}
+  .card ul{margin:0;padding-left:18px;color:var(--ink);line-height:1.65;font-size:.94rem;}
+  .card .btn{align-self:flex-start;margin-top:auto;}
+  .note{margin-top:32px;color:var(--ink-soft);font-size:.92rem;line-height:1.65;max-width:70ch;}
+  .fmt{display:grid;grid-template-columns:140px 1fr;gap:8px 28px;padding:22px 0;border-top:1px solid var(--line);}
+  .fmt:last-of-type{border-bottom:1px solid var(--line);}
+  .fmt b{font-family:'IBM Plex Mono',monospace;font-size:1.05rem;}
+  .fmt p{margin:0;line-height:1.65;color:var(--ink-soft);}
+  .cta-row{margin-top:36px;display:flex;gap:14px;flex-wrap:wrap;}
+  footer{border-top:1px solid var(--line);padding:28px 0;color:var(--ink-soft);font-size:.88rem;}
+  footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+  footer a{color:var(--ink-soft);}
+  html[data-theme="dark"] .card{background:var(--surface);}
+  @media (max-width:860px){
+    .grid3{grid-template-columns:1fr;}
+    .sp-nav a:not(.btn){display:none;}
+    main h1{font-size:2rem;}
+    .fmt{grid-template-columns:1fr;gap:4px;}
+  }
+</style>
+<link rel="stylesheet" href="theme.css">
+<script src="theme.js"></script>
+<script src="config.js"></script>
+</head>
+<body>
+<header class="sp-head">
+  <div class="wrap">
+    <a href="index.html" class="logo">Nit<span>o</span>CAD</a>
+    <nav class="sp-nav" aria-label="Site">
+      <a href="index.html">Home</a>
+      <a href="pricing.html" aria-current="page">Pricing</a>
+      <a href="civil.html">Civil tools</a>
+      <a href="exports.html">Exports</a>
+      <a href="studio.html" class="btn btn-primary">Open CAD Studio</a>
+    </nav>
+  </div>
+</header>
+<main>
+  <div class="wrap">
+
+    <h1>Pricing</h1>
+    <p class="lead">Connect a wallet, sign in for free, then buy credits in BOT. One credit covers one generation, and every export format is included. Payments settle in native BOT on BOT Chain.</p>
+    <div class="grid3">
+      <div class="card">
+        <h3>Single credit</h3>
+        <div class="amount"><b><span data-price="credit">0.01</span> BOT</b><span>per credit</span></div>
+        <p>For one part at a time. Top up whenever you need another.</p>
+        <ul>
+          <li>Free STL preview first, no wallet needed</li>
+          <li>1 credit is 1 generation</li>
+          <li>Same price for people and for agents over MCP</li>
+        </ul>
+        <a href="studio.html" class="btn btn-ghost">Open CAD Studio</a>
+      </div>
+      <div class="card best">
+        <h3><span data-price="pack1000_credits">1,000</span> credits</h3>
+        <div class="amount"><b><span data-price="pack1000">1</span> BOT</b><span><span data-price="rate1000">0.001</span> BOT per credit</span></div>
+        <p>Ten times cheaper per credit than buying one at a time.</p>
+        <ul>
+          <li><span data-price="pack1000_credits">1,000</span> generations, no expiry</li>
+          <li>Works across every CAD Studio chat</li>
+          <li>Full MCP endpoint access for agents</li>
+        </ul>
+        <a href="studio.html" class="btn btn-primary">Open CAD Studio</a>
+      </div>
+      <div class="card">
+        <h3><span data-price="pack10000_credits">10,000</span> credits</h3>
+        <div class="amount"><b><span data-price="pack10000">10</span> BOT</b><span><span data-price="rate10000">0.001</span> BOT per credit</span></div>
+        <p>The same rate as the 1,000 pack, in a bigger batch.</p>
+        <ul>
+          <li><span data-price="pack10000_credits">10,000</span> generations, no expiry</li>
+          <li>For teams and agents working in CAD Studio all day</li>
+          <li>Full MCP endpoint access for agents</li>
+        </ul>
+        <a href="studio.html" class="btn btn-ghost">Open CAD Studio</a>
+      </div>
+    </div>
+    <p class="note">Exports in STEP, IGES, DXF, PDF and STL are built on request and covered by the credit you already spent on the generation. <a href="exports.html">See the export formats</a>.</p>
+
+  </div>
+</main>
+<footer>
+  <div class="wrap">
+    <span>&copy; 2026 NitoCAD</span>
+    <span><a href="terms.html">Terms of Service</a> &nbsp; <a href="privacy.html">Privacy Policy</a></span>
+  </div>
+</footer>
+</body>
+</html>
